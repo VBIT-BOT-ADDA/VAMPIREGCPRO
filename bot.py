@@ -148,7 +148,7 @@ async def handle_nsfw_violation(client: Client, message: Message, reason: str):
     if await is_user_approved(chat_id, user_id):
         return
 
-    # Always try to delete the violating message first
+    # Always attempt to delete the offending message in group
     try:
         await message.delete()
     except Exception as e:
@@ -162,8 +162,8 @@ async def handle_nsfw_violation(client: Client, message: Message, reason: str):
             chat_id=chat_id,
             text=(
                 f"🚨 **NSFW Warning [{warn_count}/3]**\n\n"
-                f"Hey {user_mention}, your **{reason}** contains adult/NSFW content and was deleted!\n"
-                f"Please follow the rules. Reaching 3 warnings will result in an automatic **Mute**."
+                f"Hey {user_mention}, your **{reason}** contains adult/NSFW content and was removed!\n"
+                f"Please change it or follow the rules. Reaching 3 warnings will result in an automatic **Mute**."
             )
         )
     else:
@@ -178,7 +178,7 @@ async def handle_nsfw_violation(client: Client, message: Message, reason: str):
                 text=(
                     f"🚫 **User Muted!**\n\n"
                     f"**User:** {user_mention}\n"
-                    f"**Reason:** Exceeded maximum warnings for sharing/displaying NSFW ({reason}) content."
+                    f"**Reason:** Exceeded maximum 3 warnings for NSFW ({reason}) content."
                 )
             )
             await reset_warnings(chat_id, user_id)
@@ -298,7 +298,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
             reply_markup=build_start_buttons(bot.username)
         )
 
-# 4. Bot Added To Group Handler with 30-Min Temporary Invite Link
+# 4. Bot Added To Group & Member Join DP Scanner Handler
 @app.on_message(filters.new_chat_members)
 async def new_chat_event(client: Client, message: Message):
     chat_id = message.chat.id
@@ -330,33 +330,54 @@ async def new_chat_event(client: Client, message: Message):
 
         else:
             await message.reply_text(f"🎉 Welcome {member.mention} to **{message.chat.title}**!")
+            
+            # Instant DP NSFW Scan for Joined Member
             try:
                 async for photo in client.get_chat_photos(member.id, limit=1):
-                    file_path = await client.download_media(photo.file_id)
-                    if is_nsfw_media(file_path):
-                        await handle_nsfw_violation(client, message, "Profile Photo (DP)")
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
+                    dp_path = await client.download_media(photo.file_id)
+                    if dp_path and os.path.exists(dp_path):
+                        if is_nsfw_media(dp_path):
+                            await handle_nsfw_violation(client, message, "Profile Photo (DP)")
+                        os.remove(dp_path)
             except Exception as e:
-                print(f"[DP Scan Error]: {e}")
+                print(f"[DP Scan Handled Error]: {e}")
 
-# 5. Media Scanner (Stickers, GIFs & Photos)
+# 5. Fixed Media Scanner (Stickers, Animated/Video Stickers, GIFs & Photos)
 @app.on_message(filters.group & (filters.sticker | filters.animation | filters.photo))
 async def media_nsfw_checker(client: Client, message: Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id if message.from_user else 0
+
+    if not user_id:
+        return
+
+    # Skip approved users
+    if await is_user_approved(chat_id, user_id):
+        return
+
+    # Auto-handle Video / Animated stickers (.webm / .tgs) directly to prevent download crashes
+    if message.sticker and (message.sticker.is_video or message.sticker.is_animated):
+        await handle_nsfw_violation(client, message, "Video/Animated Sticker")
+        return
+
     file_path = None
     media_type = "Photo" if message.photo else ("Sticker" if message.sticker else "GIF")
 
     try:
         file_path = await client.download_media(message)
-        if file_path and is_nsfw_media(file_path):
-            await handle_nsfw_violation(client, message, media_type)
+        if file_path and os.path.exists(file_path):
+            if is_nsfw_media(file_path):
+                await handle_nsfw_violation(client, message, media_type)
     except Exception as e:
-        print(f"[Media Check Error]: {e}")
+        print(f"[Media Check Handled Error]: {e}")
     finally:
         if file_path and os.path.exists(file_path):
-            os.remove(file_path)
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
 
-# 6. Approve & Unapprove System
+# 6. Approve & Unapprove System (MongoDB)
 @app.on_message(filters.group & filters.command("approve"))
 async def approve_user(client: Client, message: Message):
     member = await client.get_chat_member(message.chat.id, message.from_user.id)
