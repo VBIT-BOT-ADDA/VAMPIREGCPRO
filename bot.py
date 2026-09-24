@@ -2,6 +2,14 @@ import os
 import sys
 import asyncio
 import time
+
+# Event loop fix for Python 3.10+ and Pyrogram
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 import requests
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -14,8 +22,16 @@ from pyrogram.types import (
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 
-# Required framework import rule
-from VampirePro import app
+# Handle VampirePro framework import rule with safe fallback
+try:
+    from VampirePro import app
+except ImportError:
+    app = Client(
+        "VAMPIREGCPRO",
+        api_id=Config.API_ID,
+        api_hash=Config.API_HASH,
+        bot_token=Config.BOT_TOKEN
+    )
 
 # ----------------- MongoDB Database Setup -----------------
 mongo_client = AsyncIOMotorClient(Config.MONGO_DB_URI)
@@ -411,4 +427,3 @@ if __name__ == "__main__":
     print("VAMPIRE GC PRO Bot Started Made by Vampire King")
     print("=" * 60)
     app.run()
-    
