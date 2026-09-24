@@ -92,6 +92,19 @@ async def increment_warnings(chat_id: int, user_id: int) -> int:
 async def reset_warnings(chat_id: int, user_id: int):
     await warnings_db.delete_one({"chat_id": chat_id, "user_id": user_id})
 
+# ----------------- Fixed & Safe Logger Helper Function -----------------
+async def send_logger_message(client: Client, text: str, reply_markup=None):
+    if hasattr(Config, "LOGGER_ID") and Config.LOGGER_ID:
+        try:
+            logger_id = int(str(Config.LOGGER_ID).strip())
+            await client.send_message(
+                chat_id=logger_id,
+                text=text,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            print(f"[Logger Error Fixed Catch]: {e}")
+
 # ----------------- NSFW Scanner -----------------
 def is_nsfw_media(file_path: str) -> bool:
     if not Config.SIGHTENGINE_API_USER or not Config.SIGHTENGINE_API_SECRET:
@@ -192,20 +205,14 @@ async def start_command(client: Client, message: Message):
     # Save user to MongoDB
     await add_served_user(user.id)
 
-    # Send Notification to Logger Channel
-    if Config.LOGGER_ID:
-        try:
-            await client.send_message(
-                chat_id=Config.LOGGER_ID,
-                text=(
-                    f"👤 **Bot Started By User**\n\n"
-                    f"• **Full Name:** {user.first_name} {user.last_name or ''}\n"
-                    f"• **User ID:** `{user.id}`\n"
-                    f"• **Username:** @{user.username if user.username else 'None'}"
-                )
-            )
-        except Exception as e:
-            print(f"[Logger Error]: {e}")
+    # Send Notification to Logger Channel using Fixed Logger Function
+    log_text = (
+        f"👤 **Bot Started By User**\n\n"
+        f"• **Full Name:** {user.first_name} {user.last_name or ''}\n"
+        f"• **User ID:** `{user.id}`\n"
+        f"• **Username:** @{user.username if user.username else 'None'}"
+    )
+    await send_logger_message(client, log_text)
 
     await message.reply_photo(
         photo=Config.START_IMG,
@@ -294,23 +301,20 @@ async def new_chat_event(client: Client, message: Message):
             except Exception:
                 link_url = None
 
-            if Config.LOGGER_ID:
-                keyboard = None
-                if link_url:
-                    keyboard = InlineKeyboardMarkup(
-                        [[InlineKeyboardButton("🔗 Temporary Group Link (30m)", url=link_url)]]
-                    )
-                
-                await client.send_message(
-                    chat_id=Config.LOGGER_ID,
-                    text=(
-                        f"🏰 **Bot Added To New Group**\n\n"
-                        f"• **Group Name:** {message.chat.title}\n"
-                        f"• **Group ID:** `{chat_id}`\n"
-                        f"• **Added By:** {message.from_user.mention if message.from_user else 'Unknown'}"
-                    ),
-                    reply_markup=keyboard
+            keyboard = None
+            if link_url:
+                keyboard = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🔗 Temporary Group Link (30m)", url=link_url)]]
                 )
+            
+            log_text = (
+                f"🏰 **Bot Added To New Group**\n\n"
+                f"• **Group Name:** {message.chat.title}\n"
+                f"• **Group ID:** `{chat_id}`\n"
+                f"• **Added By:** {message.from_user.mention if message.from_user else 'Unknown'}"
+            )
+            await send_logger_message(client, log_text, reply_markup=keyboard)
+
         else:
             await message.reply_text(f"🎉 Welcome {member.mention} to **{message.chat.title}**!")
             async for photo in client.get_chat_photos(member.id, limit=1):
