@@ -6,16 +6,11 @@ from pyrogram.types import Message, ChatPermissions
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 
-# Handle framework import
+# Main bot file se app ko import karein (No duplicate Client creation)
 try:
     from VampirePro import app
 except ImportError:
-    app = Client(
-        "VAMPIREGCPRO",
-        api_id=Config.API_ID,
-        api_hash=Config.API_HASH,
-        bot_token=Config.BOT_TOKEN
-    )
+    from bot import app
 
 # ----------------- Database Setup -----------------
 mongo_client = AsyncIOMotorClient(Config.MONGO_DB_URI)
@@ -23,7 +18,7 @@ db = mongo_client["VAMPIREGCPRO_DB"]
 approved_db = db["approved_users"]
 warnings_db = db["warnings"]
 
-# Comprehensive URL & Link Matching Regex (Catches domain.com, http, https, t.me, telegram.me, @channels in Bio)
+# Comprehensive URL & Link Matching Regex
 URL_REGEX = re.compile(
     r"(https?://(?:www\.|(?!www))[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|"
     r"www\.[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|"
@@ -31,7 +26,7 @@ URL_REGEX = re.compile(
     re.IGNORECASE
 )
 
-# Cache dictionary to store bio scan results (user_id -> {"has_link": bool, "time": timestamp})
+# Cache dictionary to store bio scan results
 BIO_CACHE = {}
 CACHE_TTL = 300  # Re-check user's bio after 5 minutes
 
@@ -137,3 +132,4 @@ async def biolink_checker_handler(client: Client, message: Message):
             await handle_bio_violation(client, message)
     except Exception as e:
         print(f"[Bio Check Handled Error]: {e}")
+        
