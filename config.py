@@ -5,6 +5,9 @@ class Config:
     API_HASH = os.environ.get("API_HASH", "your_api_hash_here")
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token_here")
     
+    # MongoDB Connection URI
+    MONGO_DB_URI = os.environ.get("MONGO_DB_URI", "your_mongodb_uri_here")
+    
     # Sightengine API Keys (Free account at sightengine.com)
     SIGHTENGINE_API_USER = os.environ.get("SIGHTENGINE_API_USER", "your_api_user")
     SIGHTENGINE_API_SECRET = os.environ.get("SIGHTENGINE_API_SECRET", "your_api_secret")
@@ -17,4 +20,4 @@ class Config:
     
     SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP", "https://t.me/YourSupportGroup")
     UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "https://t.me/YourUpdateChannel")
-  
+    
