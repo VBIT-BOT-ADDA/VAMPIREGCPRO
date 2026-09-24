@@ -1,0 +1,63 @@
+{
+  "name": "VAMPIREGCPRO",
+  "description": "Advanced AI Telegram Group Moderation Bot for NSFW detection, stickers/GIFs cleaning, and auto-mute system.",
+  "repository": "https://github.com/VBIT-BOT-ADDA/VAMPIREGCPRO",
+  "keywords": ["telegram", "bot", "pyrogram", "moderation", "nsfw-detection", "python"],
+  "stack": "container",
+  "env": {
+    "API_ID": {
+      "description": "Your Telegram API ID from my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Your Telegram API Hash from my.telegram.org",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Your Bot Token from @BotFather",
+      "required": true
+    },
+    "SIGHTENGINE_API_USER": {
+      "description": "API User Key from sightengine.com for NSFW Detection",
+      "required": true
+    },
+    "SIGHTENGINE_API_SECRET": {
+      "description": "API Secret Key from sightengine.com for NSFW Detection",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Telegram User ID of the Bot Owner",
+      "required": true
+    },
+    "LOGGER_ID": {
+      "description": "Telegram Channel ID for logs (e.g. -100123456789)",
+      "required": true
+    },
+    "OWNER_USERNAME": {
+      "description": "Telegram username of the owner without @",
+      "required": true
+    },
+    "SUPPORT_GROUP": {
+      "description": "Support Group Telegram Link",
+      "required": false,
+      "value": "https://t.me/YourSupportGroup"
+    },
+    "UPDATE_CHANNEL": {
+      "description": "Update Channel Telegram Link",
+      "required": false,
+      "value": "https://t.me/YourUpdateChannel"
+    },
+    "START_IMG": {
+      "description": "Direct image URL for start message photo",
+      "required": false,
+      "value": "https://graph.org/file/f681a97d813735f492a83.jpg"
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "eco"
+    }
+  }
+}
+
