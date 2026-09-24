@@ -92,7 +92,7 @@ async def increment_warnings(chat_id: int, user_id: int) -> int:
 async def reset_warnings(chat_id: int, user_id: int):
     await warnings_db.delete_one({"chat_id": chat_id, "user_id": user_id})
 
-# ----------------- Fixed & Safe Logger Helper Function -----------------
+# Safe Logger Helper Function
 async def send_logger_message(client: Client, text: str, reply_markup=None):
     if hasattr(Config, "LOGGER_ID") and Config.LOGGER_ID:
         try:
@@ -103,11 +103,11 @@ async def send_logger_message(client: Client, text: str, reply_markup=None):
                 reply_markup=reply_markup
             )
         except Exception as e:
-            print(f"[Logger Error Fixed Catch]: {e}")
+            print(f"[Logger Warning]: Could not send log: {e}")
 
 # ----------------- NSFW Scanner -----------------
 def is_nsfw_media(file_path: str) -> bool:
-    if not Config.SIGHTENGINE_API_USER or not Config.SIGHTENGINE_API_SECRET:
+    if not getattr(Config, "SIGHTENGINE_API_USER", None) or not getattr(Config, "SIGHTENGINE_API_SECRET", None):
         return False
     
     url = "https://api.sightengine.com/1.0/check.json"
@@ -130,29 +130,41 @@ def is_nsfw_media(file_path: str) -> bool:
                 erotica = nudity.get("erotica", 0)
                 suggestive = nudity.get("suggestive", 0)
                 
-                if max(sexual_activity, sexual_display, erotica, suggestive) > 0.6:
+                if max(sexual_activity, sexual_display, erotica, suggestive) > 0.5:
                     return True
     except Exception as e:
         print(f"[NSFW Scanner Error]: {e}")
     return False
 
-# Warning and Auto-Mute Handler
+# Warning, Auto-Delete & Auto-Mute Handler
 async def handle_nsfw_violation(client: Client, message: Message, reason: str):
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention
+    user_id = message.from_user.id if message.from_user else 0
+
+    if not user_id:
+        return
 
     # Bypass if user is Approved in MongoDB
     if await is_user_approved(chat_id, user_id):
         return
 
+    # Always try to delete the violating message first
+    try:
+        await message.delete()
+    except Exception as e:
+        print(f"[Delete Error]: Could not delete message: {e}")
+
+    user_mention = message.from_user.mention
     warn_count = await increment_warnings(chat_id, user_id)
 
     if warn_count < 3:
-        await message.reply_text(
-            f"🚨 **NSFW Warning [{warn_count}/3]**\n\n"
-            f"Hey {user_mention}, your **{reason}** contains adult/NSFW content!\n"
-            f"Please change or remove it. Reaching 3 warnings will result in an automatic **Mute**."
+        await client.send_message(
+            chat_id=chat_id,
+            text=(
+                f"🚨 **NSFW Warning [{warn_count}/3]**\n\n"
+                f"Hey {user_mention}, your **{reason}** contains adult/NSFW content and was deleted!\n"
+                f"Please follow the rules. Reaching 3 warnings will result in an automatic **Mute**."
+            )
         )
     else:
         try:
@@ -161,14 +173,20 @@ async def handle_nsfw_violation(client: Client, message: Message, reason: str):
                 user_id=user_id,
                 permissions=ChatPermissions(can_send_messages=False)
             )
-            await message.reply_text(
-                f"🚫 **User Muted!**\n\n"
-                f"**User:** {user_mention}\n"
-                f"**Reason:** Exceeded maximum warnings for sharing/displaying NSFW ({reason}) content."
+            await client.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"🚫 **User Muted!**\n\n"
+                    f"**User:** {user_mention}\n"
+                    f"**Reason:** Exceeded maximum warnings for sharing/displaying NSFW ({reason}) content."
+                )
             )
             await reset_warnings(chat_id, user_id)
         except Exception as e:
-            await message.reply_text(f"❌ **Failed to mute user:** `{e}`")
+            await client.send_message(
+                chat_id=chat_id,
+                text=f"❌ **Failed to mute user {user_mention}:** `{e}`"
+            )
 
 # Button Markup Generators
 def build_start_buttons(bot_username: str):
@@ -205,7 +223,6 @@ async def start_command(client: Client, message: Message):
     # Save user to MongoDB
     await add_served_user(user.id)
 
-    # Send Notification to Logger Channel using Fixed Logger Function
     log_text = (
         f"👤 **Bot Started By User**\n\n"
         f"• **Full Name:** {user.first_name} {user.last_name or ''}\n"
@@ -291,7 +308,7 @@ async def new_chat_event(client: Client, message: Message):
     for member in message.new_chat_members:
         if member.id == bot.id:
             try:
-                expire_time = int(time.time()) + 1800  # 30 minutes expiration
+                expire_time = int(time.time()) + 1800
                 invite = await client.create_chat_invite_link(
                     chat_id=chat_id,
                     expire_date=expire_time,
@@ -301,11 +318,7 @@ async def new_chat_event(client: Client, message: Message):
             except Exception:
                 link_url = None
 
-            keyboard = None
-            if link_url:
-                keyboard = InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("🔗 Temporary Group Link (30m)", url=link_url)]]
-                )
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Temporary Group Link (30m)", url=link_url)]]) if link_url else None
             
             log_text = (
                 f"🏰 **Bot Added To New Group**\n\n"
@@ -317,23 +330,25 @@ async def new_chat_event(client: Client, message: Message):
 
         else:
             await message.reply_text(f"🎉 Welcome {member.mention} to **{message.chat.title}**!")
-            async for photo in client.get_chat_photos(member.id, limit=1):
-                file_path = await client.download_media(photo.file_id)
-                if is_nsfw_media(file_path):
-                    await handle_nsfw_violation(client, message, "Profile Photo (DP)")
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+            try:
+                async for photo in client.get_chat_photos(member.id, limit=1):
+                    file_path = await client.download_media(photo.file_id)
+                    if is_nsfw_media(file_path):
+                        await handle_nsfw_violation(client, message, "Profile Photo (DP)")
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+            except Exception as e:
+                print(f"[DP Scan Error]: {e}")
 
-# 5. Media Scanner (Stickers & GIFs)
-@app.on_message(filters.group & (filters.sticker | filters.animation))
+# 5. Media Scanner (Stickers, GIFs & Photos)
+@app.on_message(filters.group & (filters.sticker | filters.animation | filters.photo))
 async def media_nsfw_checker(client: Client, message: Message):
     file_path = None
-    media_type = "Sticker" if message.sticker else "GIF"
+    media_type = "Photo" if message.photo else ("Sticker" if message.sticker else "GIF")
 
     try:
         file_path = await client.download_media(message)
-        if is_nsfw_media(file_path):
-            await message.delete()
+        if file_path and is_nsfw_media(file_path):
             await handle_nsfw_violation(client, message, media_type)
     except Exception as e:
         print(f"[Media Check Error]: {e}")
@@ -341,7 +356,7 @@ async def media_nsfw_checker(client: Client, message: Message):
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
 
-# 6. Approve & Unapprove System (MongoDB)
+# 6. Approve & Unapprove System
 @app.on_message(filters.group & filters.command("approve"))
 async def approve_user(client: Client, message: Message):
     member = await client.get_chat_member(message.chat.id, message.from_user.id)
@@ -378,7 +393,7 @@ async def unapprove_user(client: Client, message: Message):
     else:
         await message.reply_text(f"ℹ️ {target_user.mention} is not in the approved list.")
 
-# 7. Advanced Broadcast Engine (MongoDB Driven)
+# 7. Advanced Broadcast Engine
 @app.on_message(filters.command("broadcast"))
 async def broadcast_handler(client: Client, message: Message):
     if message.from_user.id != Config.OWNER_ID:
@@ -393,7 +408,6 @@ async def broadcast_handler(client: Client, message: Message):
 
     broadcast_msg = message.reply_to_message if message.reply_to_message else None
     
-    # Fetch targets from MongoDB
     targets = await get_served_chats()
     if include_users:
         users = await get_served_users()
@@ -425,9 +439,9 @@ async def broadcast_handler(client: Client, message: Message):
 
     await message.reply_text(f"✅ **Broadcast Completed!**\n\n• Success: `{success}`\n• Failed: `{failed}`")
 
-# Startup Log Print
 if __name__ == "__main__":
     print("=" * 60)
     print("VAMPIRE GC PRO Bot Started Made by Vampire King")
     print("=" * 60)
     app.run()
+    
