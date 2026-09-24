@@ -11,18 +11,72 @@ from pyrogram.types import (
     InlineKeyboardButton,
     CallbackQuery
 )
+from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 
-# Framework Requirement Import Rule
+# Required framework import rule
 from VampirePro import app
 
-# Storage Trackers
-WARNINGS = {}       # {chat_id: {user_id: count}}
-APPROVED_USERS = {} # {chat_id: [user_ids]}
-SERVED_USERS = set()
-SERVED_CHATS = set()
+# ----------------- MongoDB Database Setup -----------------
+mongo_client = AsyncIOMotorClient(Config.MONGO_DB_URI)
+db = mongo_client["VAMPIREGCPRO_DB"]
 
-# NSFW Media Scanner via Sightengine API
+users_db = db["users"]
+chats_db = db["chats"]
+approved_db = db["approved_users"]
+warnings_db = db["warnings"]
+
+# Helper DB Functions
+async def add_served_user(user_id: int):
+    await users_db.update_one({"user_id": user_id}, {"$set": {"user_id": user_id}}, upsert=True)
+
+async def add_served_chat(chat_id: int):
+    await chats_db.update_one({"chat_id": chat_id}, {"$set": {"chat_id": chat_id}}, upsert=True)
+
+async def get_served_users():
+    users = []
+    async for doc in users_db.find():
+        users.append(doc["user_id"])
+    return users
+
+async def get_served_chats():
+    chats = []
+    async for doc in chats_db.find():
+        chats.append(doc["chat_id"])
+    return chats
+
+async def is_user_approved(chat_id: int, user_id: int) -> bool:
+    res = await approved_db.find_one({"chat_id": chat_id, "user_id": user_id})
+    return bool(res)
+
+async def approve_user_db(chat_id: int, user_id: int):
+    await approved_db.update_one(
+        {"chat_id": chat_id, "user_id": user_id},
+        {"$set": {"chat_id": chat_id, "user_id": user_id}},
+        upsert=True
+    )
+
+async def unapprove_user_db(chat_id: int, user_id: int):
+    await approved_db.delete_one({"chat_id": chat_id, "user_id": user_id})
+
+async def get_user_warnings(chat_id: int, user_id: int) -> int:
+    doc = await warnings_db.find_one({"chat_id": chat_id, "user_id": user_id})
+    return doc["count"] if doc else 0
+
+async def increment_warnings(chat_id: int, user_id: int) -> int:
+    current = await get_user_warnings(chat_id, user_id)
+    new_count = current + 1
+    await warnings_db.update_one(
+        {"chat_id": chat_id, "user_id": user_id},
+        {"$set": {"count": new_count}},
+        upsert=True
+    )
+    return new_count
+
+async def reset_warnings(chat_id: int, user_id: int):
+    await warnings_db.delete_one({"chat_id": chat_id, "user_id": user_id})
+
+# ----------------- NSFW Scanner -----------------
 def is_nsfw_media(file_path: str) -> bool:
     if not Config.SIGHTENGINE_API_USER or not Config.SIGHTENGINE_API_SECRET:
         return False
@@ -59,17 +113,11 @@ async def handle_nsfw_violation(client: Client, message: Message, reason: str):
     user_id = message.from_user.id
     user_mention = message.from_user.mention
 
-    # Bypass if user is Approved in this chat
-    if chat_id in APPROVED_USERS and user_id in APPROVED_USERS[chat_id]:
+    # Bypass if user is Approved in MongoDB
+    if await is_user_approved(chat_id, user_id):
         return
 
-    if chat_id not in WARNINGS:
-        WARNINGS[chat_id] = {}
-    if user_id not in WARNINGS[chat_id]:
-        WARNINGS[chat_id][user_id] = 0
-
-    WARNINGS[chat_id][user_id] += 1
-    warn_count = WARNINGS[chat_id][user_id]
+    warn_count = await increment_warnings(chat_id, user_id)
 
     if warn_count < 3:
         await message.reply_text(
@@ -89,7 +137,7 @@ async def handle_nsfw_violation(client: Client, message: Message, reason: str):
                 f"**User:** {user_mention}\n"
                 f"**Reason:** Exceeded maximum warnings for sharing/displaying NSFW ({reason}) content."
             )
-            WARNINGS[chat_id][user_id] = 0
+            await reset_warnings(chat_id, user_id)
         except Exception as e:
             await message.reply_text(f"❌ **Failed to mute user:** `{e}`")
 
@@ -124,7 +172,9 @@ def build_help_buttons(bot_username: str):
 async def start_command(client: Client, message: Message):
     bot = await client.get_me()
     user = message.from_user
-    SERVED_USERS.add(user.id)
+    
+    # Save user to MongoDB
+    await add_served_user(user.id)
 
     # Send Notification to Logger Channel
     if Config.LOGGER_ID:
@@ -212,12 +262,11 @@ async def callback_handler(client: Client, query: CallbackQuery):
 @app.on_message(filters.new_chat_members)
 async def new_chat_event(client: Client, message: Message):
     chat_id = message.chat.id
-    SERVED_CHATS.add(chat_id)
+    await add_served_chat(chat_id)
     bot = await client.get_me()
 
     for member in message.new_chat_members:
         if member.id == bot.id:
-            # Bot added to group, generate 30 min temporary link for logger
             try:
                 expire_time = int(time.time()) + 1800  # 30 minutes expiration
                 invite = await client.create_chat_invite_link(
@@ -247,7 +296,6 @@ async def new_chat_event(client: Client, message: Message):
                     reply_markup=keyboard
                 )
         else:
-            # New user join welcome & DP scan
             await message.reply_text(f"🎉 Welcome {member.mention} to **{message.chat.title}**!")
             async for photo in client.get_chat_photos(member.id, limit=1):
                 file_path = await client.download_media(photo.file_id)
@@ -273,7 +321,7 @@ async def media_nsfw_checker(client: Client, message: Message):
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
 
-# 6. Approve & Unapprove System
+# 6. Approve & Unapprove System (MongoDB)
 @app.on_message(filters.group & filters.command("approve"))
 async def approve_user(client: Client, message: Message):
     member = await client.get_chat_member(message.chat.id, message.from_user.id)
@@ -286,11 +334,8 @@ async def approve_user(client: Client, message: Message):
     target_user = message.reply_to_message.from_user
     chat_id = message.chat.id
 
-    if chat_id not in APPROVED_USERS:
-        APPROVED_USERS[chat_id] = []
-
-    if target_user.id not in APPROVED_USERS[chat_id]:
-        APPROVED_USERS[chat_id].append(target_user.id)
+    if not await is_user_approved(chat_id, target_user.id):
+        await approve_user_db(chat_id, target_user.id)
         await message.reply_text(f"✅ {target_user.mention} is now approved! Bot will ignore their content.")
     else:
         await message.reply_text(f"ℹ️ {target_user.mention} is already approved.")
@@ -307,13 +352,13 @@ async def unapprove_user(client: Client, message: Message):
     target_user = message.reply_to_message.from_user
     chat_id = message.chat.id
 
-    if chat_id in APPROVED_USERS and target_user.id in APPROVED_USERS[chat_id]:
-        APPROVED_USERS[chat_id].remove(target_user.id)
+    if await is_user_approved(chat_id, target_user.id):
+        await unapprove_user_db(chat_id, target_user.id)
         await message.reply_text(f"🚫 {target_user.mention} has been unapproved.")
     else:
         await message.reply_text(f"ℹ️ {target_user.mention} is not in the approved list.")
 
-# 7. Advanced Broadcast Engine
+# 7. Advanced Broadcast Engine (MongoDB Driven)
 @app.on_message(filters.command("broadcast"))
 async def broadcast_handler(client: Client, message: Message):
     if message.from_user.id != Config.OWNER_ID:
@@ -326,14 +371,15 @@ async def broadcast_handler(client: Client, message: Message):
     include_users = "-user" in args
     should_pin = "-pin" in args
 
-    # Extract text content
     broadcast_msg = message.reply_to_message if message.reply_to_message else None
     
-    targets = list(SERVED_CHATS)
+    # Fetch targets from MongoDB
+    targets = await get_served_chats()
     if include_users:
-        targets.extend(list(SERVED_USERS))
+        users = await get_served_users()
+        targets.extend(users)
 
-    await message.reply_text(f"🚀 Starting broadcast to {len(targets)} targets...")
+    await message.reply_text(f"🚀 Starting broadcast to {len(targets)} targets from database...")
     
     success = 0
     failed = 0
@@ -343,7 +389,6 @@ async def broadcast_handler(client: Client, message: Message):
             if broadcast_msg:
                 sent = await broadcast_msg.copy(chat_id=target_id)
             else:
-                # Remove flags from broadcast text
                 text_to_send = " ".join([word for word in args[1:] if word not in ["-user", "-pin"]])
                 sent = await client.send_message(chat_id=target_id, text=text_to_send)
 
@@ -366,4 +411,4 @@ if __name__ == "__main__":
     print("VAMPIRE GC PRO Bot Started Made by Vampire King")
     print("=" * 60)
     app.run()
-  
+    
