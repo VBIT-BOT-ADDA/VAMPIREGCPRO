@@ -1,9 +1,13 @@
 {
   "name": "VAMPIREGCPRO",
-  "description": "Advanced AI Telegram Group Moderation Bot for NSFW detection, stickers/GIFs cleaning, and auto-mute system.",
+  "description": "Advanced AI Telegram Group Moderation Bot with MongoDB support",
   "repository": "https://github.com/VBIT-BOT-ADDA/VAMPIREGCPRO",
-  "keywords": ["telegram", "bot", "pyrogram", "moderation", "nsfw-detection", "python"],
-  "stack": "container",
+  "keywords": ["telegram", "bot", "pyrogram", "moderation", "python", "mongodb"],
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
   "env": {
     "API_ID": {
       "description": "Your Telegram API ID from my.telegram.org",
@@ -17,12 +21,16 @@
       "description": "Your Bot Token from @BotFather",
       "required": true
     },
+    "MONGO_DB_URI": {
+      "description": "Your MongoDB Atlas Connection URL (e.g., mongodb+scheme://...)",
+      "required": true
+    },
     "SIGHTENGINE_API_USER": {
-      "description": "API User Key from sightengine.com for NSFW Detection",
+      "description": "API User Key from sightengine.com",
       "required": true
     },
     "SIGHTENGINE_API_SECRET": {
-      "description": "API Secret Key from sightengine.com for NSFW Detection",
+      "description": "API Secret Key from sightengine.com",
       "required": true
     },
     "OWNER_ID": {
@@ -60,4 +68,3 @@
     }
   }
 }
-
