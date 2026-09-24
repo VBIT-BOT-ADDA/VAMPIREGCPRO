@@ -15,8 +15,8 @@ class Config:
     # Media, Logger & Links
     START_IMG = os.environ.get("START_IMG", "https://graph.org/file/f681a97d813735f492a83.jpg")
     OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "YourOwnerUsername")  # Without @
-    OWNER_ID = int(os.environ.get("OWNER_ID", "123456789"))  # Owner User ID for Broadcast
-    LOGGER_ID = int(os.environ.get("LOGGER_ID", "-100123456789"))  # Log Channel ID
+    OWNER_ID = int(os.environ.get("OWNER_ID", "8640086543"))  # Owner User ID for Broadcast
+    LOGGER_ID = int(os.environ.get("LOGGER_ID", "-1004434076998"))  # Log Channel ID
     
     SUPPORT_GROUP = os.environ.get("SUPPORT_GROUP", "https://t.me/YourSupportGroup")
     UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "https://t.me/YourUpdateChannel")
