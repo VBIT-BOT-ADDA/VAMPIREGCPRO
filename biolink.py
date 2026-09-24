@@ -1,51 +1,89 @@
-import os
 import re
 import asyncio
+import time
 from pyrogram import Client, filters
 from pyrogram.types import Message, ChatPermissions
+from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 
-# Framework Requirement Import Rule
-from VampirePro import app
+# Handle framework import
+try:
+    from VampirePro import app
+except ImportError:
+    app = Client(
+        "VAMPIREGCPRO",
+        api_id=Config.API_ID,
+        api_hash=Config.API_HASH,
+        bot_token=Config.BOT_TOKEN
+    )
 
-# Storage Trackers
-BIO_WARNINGS = {}        # {chat_id: {user_id: count}}
-APPROVED_BIO_USERS = {}  # {chat_id: [user_ids]}
+# ----------------- Database Setup -----------------
+mongo_client = AsyncIOMotorClient(Config.MONGO_DB_URI)
+db = mongo_client["VAMPIREGCPRO_DB"]
+approved_db = db["approved_users"]
+warnings_db = db["warnings"]
 
-# Regex pattern to detect URLs or Telegram Usernames/Handles (@username)
-BIO_LINK_PATTERN = re.compile(
-    r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}(/[^\s]*)?|@[a-zA-Z0-9_]{3,32})',
+# Comprehensive URL & Link Matching Regex (Catches domain.com, http, https, t.me, telegram.me, @channels in Bio)
+URL_REGEX = re.compile(
+    r"(https?://(?:www\.|(?!www))[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|"
+    r"www\.[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|"
+    r"https?://[^\s]+|t\.me/[^\s]+|telegram\.me/[^\s]+|[a-zA-Z0-9-]+\.(?:com|org|net|me|in|io|co|site|xyz|online|app))",
     re.IGNORECASE
 )
 
-# Function to check if bio contains any link or handle
-def contains_bio_link(bio_text: str) -> bool:
-    if not bio_text:
-        return False
-    return bool(BIO_LINK_PATTERN.search(bio_text))
+# Cache dictionary to store bio scan results (user_id -> {"has_link": bool, "time": timestamp})
+BIO_CACHE = {}
+CACHE_TTL = 300  # Re-check user's bio after 5 minutes
 
-# Warning and Auto-Mute Action Handler for Bio Violation
-async def handle_bio_violation(client: Client, message: Message, user_id: int, user_mention: str):
+async def is_user_approved(chat_id: int, user_id: int) -> bool:
+    res = await approved_db.find_one({"chat_id": chat_id, "user_id": user_id})
+    return bool(res)
+
+async def increment_warnings(chat_id: int, user_id: int) -> int:
+    doc = await warnings_db.find_one({"chat_id": chat_id, "user_id": user_id})
+    current = doc["count"] if doc else 0
+    new_count = current + 1
+    await warnings_db.update_one(
+        {"chat_id": chat_id, "user_id": user_id},
+        {"$set": {"count": new_count}},
+        upsert=True
+    )
+    return new_count
+
+async def reset_warnings(chat_id: int, user_id: int):
+    await warnings_db.delete_one({"chat_id": chat_id, "user_id": user_id})
+
+# Bio Violation Handler (Instant Delete + Warning / Mute)
+async def handle_bio_violation(client: Client, message: Message):
     chat_id = message.chat.id
+    user_id = message.from_user.id if message.from_user else 0
 
-    # Check if user is approved in this chat
-    if chat_id in APPROVED_BIO_USERS and user_id in APPROVED_BIO_USERS[chat_id]:
+    if not user_id:
         return
 
-    if chat_id not in BIO_WARNINGS:
-        BIO_WARNINGS[chat_id] = {}
-    if user_id not in BIO_WARNINGS[chat_id]:
-        BIO_WARNINGS[chat_id][user_id] = 0
+    # Skip Approved Users
+    if await is_user_approved(chat_id, user_id):
+        return
 
-    BIO_WARNINGS[chat_id][user_id] += 1
-    warn_count = BIO_WARNINGS[chat_id][user_id]
+    # 1. Delete user's message immediately
+    try:
+        await message.delete()
+    except Exception as e:
+        print(f"[BioLink Delete Error]: {e}")
 
+    user_mention = message.from_user.mention
+    warn_count = await increment_warnings(chat_id, user_id)
+
+    # 2. Warning and Mute logic
     if warn_count < 3:
-        await message.reply_text(
-            f"⚠️ **Bio Link Warning [{warn_count}/3]**\n\n"
-            f"Hey {user_mention}, links or Telegram handles (`@username`) were detected in your Bio!\n"
-            f"**Please remove your bio link immediately.**\n"
-            f"If you do not remove it after 3 warnings, you will be automatically **Muted**."
+        await client.send_message(
+            chat_id=chat_id,
+            text=(
+                f"🚨 **Bio Link Warning [{warn_count}/3]**\n\n"
+                f"Hey {user_mention}, links/websites in profile Bio are strictly prohibited!\n"
+                f"Your message was removed. Please remove the link from your Telegram Bio.\n"
+                f"Reaching 3 warnings will result in an automatic **Mute**."
+            )
         )
     else:
         try:
@@ -54,91 +92,48 @@ async def handle_bio_violation(client: Client, message: Message, user_id: int, u
                 user_id=user_id,
                 permissions=ChatPermissions(can_send_messages=False)
             )
-            await message.reply_text(
-                f"🚫 **User Muted!**\n\n"
-                f"**User:** {user_mention}\n"
-                f"**Reason:** Failed to remove Bio Link/Handle after 3 warnings."
+            await client.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"🚫 **User Muted!**\n\n"
+                    f"**User:** {user_mention}\n"
+                    f"**Reason:** Promoting links in Profile Bio after 3 warnings."
+                )
             )
-            BIO_WARNINGS[chat_id][user_id] = 0  # Reset warning counter
+            await reset_warnings(chat_id, user_id)
         except Exception as e:
-            await message.reply_text(f"❌ **Failed to mute user:** `{e}`")
+            await client.send_message(
+                chat_id=chat_id,
+                text=f"❌ **Failed to mute {user_mention}:** `{e}`"
+            )
 
-# 1. Bio Checker for Message Event in Groups
-@app.on_message(filters.group & ~filters.bot, group=1)
-async def check_user_bio_on_message(client: Client, message: Message):
+# High-Speed Bio Scanner Handler
+@app.on_message(filters.group & ~filters.service)
+async def biolink_checker_handler(client: Client, message: Message):
     if not message.from_user:
         return
 
     user_id = message.from_user.id
-    chat_id = message.chat.id
+    current_time = time.time()
 
-    # Skip if user is approved
-    if chat_id in APPROVED_BIO_USERS and user_id in APPROVED_BIO_USERS[chat_id]:
-        return
+    # Check cache first for superfast execution
+    if user_id in BIO_CACHE:
+        cached_data = BIO_CACHE[user_id]
+        if current_time - cached_data["time"] < CACHE_TTL:
+            if cached_data["has_link"]:
+                await handle_bio_violation(client, message)
+            return
 
+    # Fetch user bio if not cached or cache expired
     try:
         user_info = await client.get_chat(user_id)
-        user_bio = user_info.bio or ""
+        bio_text = user_info.bio or ""
 
-        if contains_bio_link(user_bio):
-            await handle_bio_violation(client, message, user_id, message.from_user.mention)
+        # Check if bio contains link
+        has_link = bool(URL_REGEX.search(bio_text))
+        BIO_CACHE[user_id] = {"has_link": has_link, "time": current_time}
+
+        if has_link:
+            await handle_bio_violation(client, message)
     except Exception as e:
-        print(f"[Bio Check Error]: {e}")
-
-# 2. Bio Checker for New Member Joining Group
-@app.on_message(filters.group & filters.new_chat_members, group=2)
-async def check_user_bio_on_join(client: Client, message: Message):
-    for member in message.new_chat_members:
-        if member.is_bot:
-            continue
-
-        try:
-            user_info = await client.get_chat(member.id)
-            user_bio = user_info.bio or ""
-
-            if contains_bio_link(user_bio):
-                await handle_bio_violation(client, message, member.id, member.mention)
-        except Exception as e:
-            print(f"[Bio Join Check Error]: {e}")
-
-# 3. Approve User (Bypass Bio Link Checks)
-@app.on_message(filters.group & filters.command("approve"))
-async def approve_bio_user(client: Client, message: Message):
-    member = await client.get_chat_member(message.chat.id, message.from_user.id)
-    if member.status not in ["administrator", "creator"]:
-        return await message.reply_text("❌ Only group administrators can approve users.")
-
-    if not message.reply_to_message or not message.reply_to_message.from_user:
-        return await message.reply_text("❌ Reply to a user's message to approve them.")
-
-    target_user = message.reply_to_message.from_user
-    chat_id = message.chat.id
-
-    if chat_id not in APPROVED_BIO_USERS:
-        APPROVED_BIO_USERS[chat_id] = []
-
-    if target_user.id not in APPROVED_BIO_USERS[chat_id]:
-        APPROVED_BIO_USERS[chat_id].append(target_user.id)
-        await message.reply_text(f"✅ {target_user.mention} has been approved! Bio link checks will now ignore this user.")
-    else:
-        await message.reply_text(f"ℹ️ {target_user.mention} is already in the approved list.")
-
-# 4. Unapprove User (Remove Bypass Exemption)
-@app.on_message(filters.group & filters.command("unapprove"))
-async def unapprove_bio_user(client: Client, message: Message):
-    member = await client.get_chat_member(message.chat.id, message.from_user.id)
-    if member.status not in ["administrator", "creator"]:
-        return await message.reply_text("❌ Only group administrators can unapprove users.")
-
-    if not message.reply_to_message or not message.reply_to_message.from_user:
-        return await message.reply_text("❌ Reply to a user's message to unapprove them.")
-
-    target_user = message.reply_to_message.from_user
-    chat_id = message.chat.id
-
-    if chat_id in APPROVED_BIO_USERS and target_user.id in APPROVED_BIO_USERS[chat_id]:
-        APPROVED_BIO_USERS[chat_id].remove(target_user.id)
-        await message.reply_text(f"🚫 {target_user.mention} has been unapproved. Bio link protection reactivated for this user.")
-    else:
-        await message.reply_text(f"ℹ️ {target_user.mention} is not in the approved list.")
-      
+        print(f"[Bio Check Handled Error]: {e}")
