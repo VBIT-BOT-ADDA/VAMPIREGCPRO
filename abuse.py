@@ -1,15 +1,27 @@
 import os
 import re
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, ChatPermissions
+from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 
 # Required framework import rule
-from VampirePro import app
+try:
+    from VampirePro import app
+except ImportError:
+    app = Client(
+        "VAMPIREGCPRO",
+        api_id=Config.API_ID,
+        api_hash=Config.API_HASH,
+        bot_token=Config.BOT_TOKEN
+    )
 
-# Storage Trackers
-ABUSE_WARNINGS = {}        # {chat_id: {user_id: count}}
-APPROVED_ABUSE_USERS = {}  # {chat_id: [user_ids]}
+# ----------------- Database Setup (MongoDB) -----------------
+mongo_client = AsyncIOMotorClient(Config.MONGO_DB_URI)
+db = mongo_client["VAMPIREGCPRO_DB"]
+approved_db = db["approved_users"]
+warnings_db = db["warnings"]
 
 # List of filtered bad words and abusive terms
 BAD_WORDS = [
@@ -21,46 +33,63 @@ BAD_WORDS = [
     "x", "sexy", "seaxy", "dm", "pm", "bio", "join", "link"
 ]
 
-# Build regex pattern to match exact word occurrences (case-insensitive)
-pattern_str = r'\b(' + '|'.join([re.escape(word) for word in BAD_WORDS]) + r')\b'
-ABUSE_PATTERN = re.compile(pattern_str, re.IGNORECASE)
+# Robust Regex Pattern (Matches exact words as well as words connected with symbols/punctuations)
+pattern_str = r'(?i)(?:\b|_|(?<=\W))(' + '|'.join([re.escape(word) for word in BAD_WORDS]) + r')(?:\b|_|(?=\W))'
+ABUSE_PATTERN = re.compile(pattern_str)
 
-# Function to check if a message text contains any blocked terms
+# Helper DB Functions
+async def is_user_approved(chat_id: int, user_id: int) -> bool:
+    res = await approved_db.find_one({"chat_id": chat_id, "user_id": user_id})
+    return bool(res)
+
+async def increment_warnings(chat_id: int, user_id: int) -> int:
+    doc = await warnings_db.find_one({"chat_id": chat_id, "user_id": user_id})
+    current = doc["count"] if doc else 0
+    new_count = current + 1
+    await warnings_db.update_one(
+        {"chat_id": chat_id, "user_id": user_id},
+        {"$set": {"count": new_count}},
+        upsert=True
+    )
+    return new_count
+
+async def reset_warnings(chat_id: int, user_id: int):
+    await warnings_db.delete_one({"chat_id": chat_id, "user_id": user_id})
+
+# Function to check if text contains abusive terms
 def contains_abuse(text: str) -> bool:
     if not text:
         return False
     return bool(ABUSE_PATTERN.search(text))
 
-# Violation action handler: Delete message, warn, and auto-mute after 3 warnings
+# Violation Handler: Immediate Delete -> Warning -> Auto-Mute after 3 Strikes
 async def handle_abuse_violation(client: Client, message: Message):
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention
+    user_id = message.from_user.id if message.from_user else 0
 
-    # Delete the abusive message immediately
+    if not user_id:
+        return
+
+    # Skip check if user is approved in MongoDB
+    if await is_user_approved(chat_id, user_id):
+        return
+
+    # 1. Delete the abusive message immediately
     try:
         await message.delete()
     except Exception as e:
         print(f"[Abuse Delete Error]: {e}")
 
-    # Skip warnings/mute if user is approved in this chat
-    if chat_id in APPROVED_ABUSE_USERS and user_id in APPROVED_ABUSE_USERS[chat_id]:
-        return
+    user_mention = message.from_user.mention
+    warn_count = await increment_warnings(chat_id, user_id)
 
-    if chat_id not in ABUSE_WARNINGS:
-        ABUSE_WARNINGS[chat_id] = {}
-    if user_id not in ABUSE_WARNINGS[chat_id]:
-        ABUSE_WARNINGS[chat_id][user_id] = 0
-
-    ABUSE_WARNINGS[chat_id][user_id] += 1
-    warn_count = ABUSE_WARNINGS[chat_id][user_id]
-
+    # 2. Warning and Mute Logic
     if warn_count < 3:
         await client.send_message(
             chat_id=chat_id,
             text=(
                 f"⚠️ **Abusive Language Warning [{warn_count}/3]**\n\n"
-                f"Hey {user_mention}, abusive/prohibited words are not allowed in this group!\n"
+                f"Hey {user_mention}, abusive/prohibited words are strictly not allowed in this group!\n"
                 f"Your message has been deleted. Reaching 3 warnings will result in an automatic **Mute**."
             )
         )
@@ -76,10 +105,10 @@ async def handle_abuse_violation(client: Client, message: Message):
                 text=(
                     f"🚫 **User Muted!**\n\n"
                     f"**User:** {user_mention}\n"
-                    f"**Reason:** Exceeded maximum warnings for using abusive language."
+                    f"**Reason:** Exceeded maximum 3 warnings for using abusive language."
                 )
             )
-            ABUSE_WARNINGS[chat_id][user_id] = 0  # Reset counter
+            await reset_warnings(chat_id, user_id)
         except Exception as e:
             await client.send_message(chat_id=chat_id, text=f"❌ **Failed to mute user:** `{e}`")
 
@@ -107,11 +136,12 @@ async def approve_abuse_user(client: Client, message: Message):
     target_user = message.reply_to_message.from_user
     chat_id = message.chat.id
 
-    if chat_id not in APPROVED_ABUSE_USERS:
-        APPROVED_ABUSE_USERS[chat_id] = []
-
-    if target_user.id not in APPROVED_ABUSE_USERS[chat_id]:
-        APPROVED_ABUSE_USERS[chat_id].append(target_user.id)
+    if not await is_user_approved(chat_id, target_user.id):
+        await approved_db.update_one(
+            {"chat_id": chat_id, "user_id": target_user.id},
+            {"$set": {"chat_id": chat_id, "user_id": target_user.id}},
+            upsert=True
+        )
         await message.reply_text(f"✅ {target_user.mention} is now approved! Anti-abuse filter will ignore this user.")
     else:
         await message.reply_text(f"ℹ️ {target_user.mention} is already approved.")
@@ -129,9 +159,9 @@ async def unapprove_abuse_user(client: Client, message: Message):
     target_user = message.reply_to_message.from_user
     chat_id = message.chat.id
 
-    if chat_id in APPROVED_ABUSE_USERS and target_user.id in APPROVED_ABUSE_USERS[chat_id]:
-        APPROVED_ABUSE_USERS[chat_id].remove(target_user.id)
+    if await is_user_approved(chat_id, target_user.id):
+        await approved_db.delete_one({"chat_id": chat_id, "user_id": target_user.id})
         await message.reply_text(f"🚫 {target_user.mention} has been unapproved. Anti-abuse filter reactivated for this user.")
     else:
         await message.reply_text(f"ℹ️ {target_user.mention} is not in the approved list.")
-      
+    
