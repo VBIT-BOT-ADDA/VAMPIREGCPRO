@@ -6,7 +6,7 @@ from pyrogram.types import Message, ChatPermissions
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 
-# Main bot file se app ko import karein (No duplicate Client creation)
+# Main app import
 try:
     from VampirePro import app
 except ImportError:
@@ -18,17 +18,14 @@ db = mongo_client["VAMPIREGCPRO_DB"]
 approved_db = db["approved_users"]
 warnings_db = db["warnings"]
 
-# Comprehensive URL & Link Matching Regex
+# Regex for matching links in Bio
 URL_REGEX = re.compile(
-    r"(https?://(?:www\.|(?!www))[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|"
-    r"www\.[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|"
-    r"https?://[^\s]+|t\.me/[^\s]+|telegram\.me/[^\s]+|[a-zA-Z0-9-]+\.(?:com|org|net|me|in|io|co|site|xyz|online|app))",
+    r"(https?://\S+|t\.me/\S+|telegram\.me/\S+|\b[a-zA-Z0-9.-]+\.(?:com|org|net|me|in|site|xyz|online|app)\b)",
     re.IGNORECASE
 )
 
-# Cache dictionary to store bio scan results
-BIO_CACHE = {}
-CACHE_TTL = 300  # Re-check user's bio after 5 minutes
+BIO_CACHE = {}  # {user_id: {"has_link": bool, "time": timestamp}}
+CACHE_TTL = 300  # 5 minutes cache
 
 async def is_user_approved(chat_id: int, user_id: int) -> bool:
     res = await approved_db.find_one({"chat_id": chat_id, "user_id": user_id})
@@ -48,19 +45,15 @@ async def increment_warnings(chat_id: int, user_id: int) -> int:
 async def reset_warnings(chat_id: int, user_id: int):
     await warnings_db.delete_one({"chat_id": chat_id, "user_id": user_id})
 
-# Bio Violation Handler (Instant Delete + Warning / Mute)
+# Bio Violation Handler
 async def handle_bio_violation(client: Client, message: Message):
     chat_id = message.chat.id
     user_id = message.from_user.id if message.from_user else 0
 
-    if not user_id:
+    if not user_id or await is_user_approved(chat_id, user_id):
         return
 
-    # Skip Approved Users
-    if await is_user_approved(chat_id, user_id):
-        return
-
-    # 1. Delete user's message immediately
+    # Delete user's message immediately
     try:
         await message.delete()
     except Exception as e:
@@ -69,7 +62,6 @@ async def handle_bio_violation(client: Client, message: Message):
     user_mention = message.from_user.mention
     warn_count = await increment_warnings(chat_id, user_id)
 
-    # 2. Warning and Mute logic
     if warn_count < 3:
         await client.send_message(
             chat_id=chat_id,
@@ -97,13 +89,10 @@ async def handle_bio_violation(client: Client, message: Message):
             )
             await reset_warnings(chat_id, user_id)
         except Exception as e:
-            await client.send_message(
-                chat_id=chat_id,
-                text=f"❌ **Failed to mute {user_mention}:** `{e}`"
-            )
+            await client.send_message(chat_id=chat_id, text=f"❌ **Failed to mute {user_mention}:** `{e}`")
 
-# High-Speed Bio Scanner Handler
-@app.on_message(filters.group & ~filters.service)
+# High-Priority Bio Scanner Handler
+@app.on_message(filters.group & ~filters.me & ~filters.service, group=-2)
 async def biolink_checker_handler(client: Client, message: Message):
     if not message.from_user:
         return
@@ -111,7 +100,7 @@ async def biolink_checker_handler(client: Client, message: Message):
     user_id = message.from_user.id
     current_time = time.time()
 
-    # Check cache first for superfast execution
+    # Fast Cache Check
     if user_id in BIO_CACHE:
         cached_data = BIO_CACHE[user_id]
         if current_time - cached_data["time"] < CACHE_TTL:
@@ -119,12 +108,11 @@ async def biolink_checker_handler(client: Client, message: Message):
                 await handle_bio_violation(client, message)
             return
 
-    # Fetch user bio if not cached or cache expired
+    # Fetch User Bio
     try:
         user_info = await client.get_chat(user_id)
         bio_text = user_info.bio or ""
 
-        # Check if bio contains link
         has_link = bool(URL_REGEX.search(bio_text))
         BIO_CACHE[user_id] = {"has_link": has_link, "time": current_time}
 
@@ -132,4 +120,3 @@ async def biolink_checker_handler(client: Client, message: Message):
             await handle_bio_violation(client, message)
     except Exception as e:
         print(f"[Bio Check Handled Error]: {e}")
-        
