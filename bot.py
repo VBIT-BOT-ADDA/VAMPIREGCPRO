@@ -54,13 +54,6 @@ else:
         style=None,
         **kwargs
     ):
-        """
-        Old Pyrogram versions don't support the
-        `style` parameter.
-
-        We keep all existing button code unchanged
-        and simply ignore style when unsupported.
-        """
 
         return PyrogramInlineKeyboardButton(
             *args,
@@ -426,6 +419,65 @@ def get_owner_id():
         return 0
 
 
+def get_owner_username():
+
+    try:
+
+        username = getattr(
+            Config,
+            "OWNER_USERNAME",
+            None
+        )
+
+        if username:
+
+            username = str(
+                username
+            ).strip()
+
+            username = username.replace(
+                "https://t.me/",
+                ""
+            )
+
+            username = username.replace(
+                "http://t.me/",
+                ""
+            )
+
+            username = username.replace(
+                "@",
+                ""
+            )
+
+            username = username.strip("/")
+
+            if username:
+                return username
+
+    except Exception:
+        pass
+
+    return ""
+
+
+def get_owner_url():
+
+    username = get_owner_username()
+
+    if username:
+
+        return f"https://t.me/{username}"
+
+    owner_id = get_owner_id()
+
+    if owner_id:
+
+        return f"tg://user?id={owner_id}"
+
+    return "https://t.me/"
+
+
 async def is_admin_or_owner(
     client: Client,
     chat_id: int,
@@ -465,6 +517,141 @@ async def is_admin_or_owner(
         )
 
     return False
+
+
+# ============================================================
+# WELCOME IMAGE HELPERS
+# ============================================================
+
+def get_welcome_image():
+
+    try:
+
+        image = getattr(
+            Config,
+            "WELCOME_IMAGE",
+            None
+        )
+
+        if image:
+
+            image = str(
+                image
+            ).strip()
+
+            if image:
+                return image
+
+    except Exception as e:
+
+        print(
+            f"[Welcome Image Config Error] {e}"
+        )
+
+    return None
+
+
+async def prepare_welcome_image():
+
+    image = get_welcome_image()
+
+    if not image:
+        return None
+
+    # --------------------------------------------------------
+    # LOCAL FILE
+    # --------------------------------------------------------
+
+    if os.path.exists(image):
+
+        return image
+
+    # --------------------------------------------------------
+    # TELEGRAM FILE ID / OTHER NON-URL VALUE
+    # --------------------------------------------------------
+
+    if not (
+        image.startswith("http://")
+        or image.startswith("https://")
+    ):
+
+        return image
+
+    # --------------------------------------------------------
+    # DIRECT IMAGE URL
+    # --------------------------------------------------------
+
+    try:
+
+        response = await asyncio.to_thread(
+            requests.get,
+            image,
+            timeout=20,
+            stream=True,
+        )
+
+        if response.status_code != 200:
+
+            print(
+                f"[Welcome Image HTTP Error] "
+                f"{response.status_code}"
+            )
+
+            return image
+
+        content_type = (
+            response.headers.get(
+                "content-type",
+                ""
+            ).lower()
+        )
+
+        extension = ".jpg"
+
+        if "png" in content_type:
+            extension = ".png"
+
+        elif "webp" in content_type:
+            extension = ".webp"
+
+        elif "jpeg" in content_type:
+            extension = ".jpg"
+
+        image_path = os.path.join(
+            "/tmp",
+            "nsfw_protection_welcome" + extension
+        )
+
+        def save_image():
+
+            with open(
+                image_path,
+                "wb"
+            ) as file:
+
+                for chunk in response.iter_content(
+                    chunk_size=1024 * 1024
+                ):
+
+                    if chunk:
+                        file.write(chunk)
+
+        await asyncio.to_thread(
+            save_image
+        )
+
+        if os.path.exists(image_path):
+
+            if os.path.getsize(image_path) > 0:
+                return image_path
+
+    except Exception as e:
+
+        print(
+            f"[Welcome Image Download Error] {e}"
+        )
+
+    return image
 
 
 # ============================================================
@@ -632,10 +819,6 @@ async def handle_nsfw_user_violation(
     if not user_id:
         return False
 
-    # --------------------------------------------------------
-    # ADMIN / OWNER BYPASS
-    # --------------------------------------------------------
-
     if await is_admin_or_owner(
         client,
         chat_id,
@@ -643,19 +826,11 @@ async def handle_nsfw_user_violation(
     ):
         return False
 
-    # --------------------------------------------------------
-    # APPROVED USER BYPASS
-    # --------------------------------------------------------
-
     if await is_user_approved(
         chat_id,
         user_id
     ):
         return False
-
-    # --------------------------------------------------------
-    # DELETE OFFENDING MESSAGE
-    # --------------------------------------------------------
 
     if message is not None:
 
@@ -675,10 +850,6 @@ async def handle_nsfw_user_violation(
                 f"[Delete Error] {e}"
             )
 
-    # --------------------------------------------------------
-    # ADD WARNING
-    # --------------------------------------------------------
-
     warn_count = await increment_warnings(
         chat_id,
         user_id
@@ -688,10 +859,6 @@ async def handle_nsfw_user_violation(
         client,
         user_id
     )
-
-    # --------------------------------------------------------
-    # WARNING 1 / 3 AND 2 / 3
-    # --------------------------------------------------------
 
     if warn_count < 3:
 
@@ -714,10 +881,6 @@ async def handle_nsfw_user_violation(
             )
 
         return True
-
-    # --------------------------------------------------------
-    # 3 / 3 = MUTE
-    # --------------------------------------------------------
 
     try:
 
@@ -795,10 +958,6 @@ async def scan_current_profile_photo(
             if not file_id:
                 return False, False
 
-            # ------------------------------------------------
-            # CACHE
-            # ------------------------------------------------
-
             cache = PROFILE_SCAN_CACHE.get(
                 user_id
             )
@@ -818,10 +977,6 @@ async def scan_current_profile_photo(
                     )
                 )
 
-            # ------------------------------------------------
-            # DOWNLOAD DP
-            # ------------------------------------------------
-
             dp_path = await client.download_media(
                 file_id
             )
@@ -831,10 +986,6 @@ async def scan_current_profile_photo(
                 or not os.path.exists(dp_path)
             ):
                 return True, False
-
-            # ------------------------------------------------
-            # SCAN DP
-            # ------------------------------------------------
 
             scan_result = await asyncio.to_thread(
                 is_nsfw_media,
@@ -847,10 +998,6 @@ async def scan_current_profile_photo(
                 else False
             )
 
-            # ------------------------------------------------
-            # CACHE RESULT
-            # ------------------------------------------------
-
             PROFILE_SCAN_CACHE[user_id] = {
                 "file_id": file_id,
                 "is_nsfw": nsfw,
@@ -859,16 +1006,10 @@ async def scan_current_profile_photo(
 
             cleanup_profile_cache()
 
-            # ------------------------------------------------
-            # DELETE TEMP FILE
-            # ------------------------------------------------
-
             if os.path.exists(dp_path):
 
                 try:
-
                     os.remove(dp_path)
-
                 except Exception:
                     pass
 
@@ -910,10 +1051,6 @@ async def profile_scan_handler(
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    # --------------------------------------------------------
-    # ADMIN / OWNER
-    # --------------------------------------------------------
-
     if await is_admin_or_owner(
         client,
         chat_id,
@@ -921,19 +1058,11 @@ async def profile_scan_handler(
     ):
         return
 
-    # --------------------------------------------------------
-    # APPROVED USER
-    # --------------------------------------------------------
-
     if await is_user_approved(
         chat_id,
         user_id
     ):
         return
-
-    # --------------------------------------------------------
-    # SCAN CURRENT DP
-    # --------------------------------------------------------
 
     has_photo, nsfw = await scan_current_profile_photo(
         client,
@@ -982,10 +1111,6 @@ async def media_nsfw_checker(
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    # --------------------------------------------------------
-    # ADMIN / OWNER BYPASS
-    # --------------------------------------------------------
-
     if await is_admin_or_owner(
         client,
         chat_id,
@@ -993,25 +1118,13 @@ async def media_nsfw_checker(
     ):
         return
 
-    # --------------------------------------------------------
-    # APPROVED USER BYPASS
-    # --------------------------------------------------------
-
     if await is_user_approved(
         chat_id,
         user_id
     ):
         return
 
-    # ========================================================
-    # STICKER HANDLING
-    # ========================================================
-
     if message.sticker:
-
-        # ----------------------------------------------------
-        # VIDEO STICKER
-        # ----------------------------------------------------
 
         if getattr(
             message.sticker,
@@ -1034,10 +1147,6 @@ async def media_nsfw_checker(
 
             return
 
-        # ----------------------------------------------------
-        # ANIMATED STICKER
-        # ----------------------------------------------------
-
         if getattr(
             message.sticker,
             "is_animated",
@@ -1059,10 +1168,6 @@ async def media_nsfw_checker(
 
             return
 
-    # ========================================================
-    # NORMAL PHOTO / STATIC STICKER / GIF
-    # ========================================================
-
     file_path = None
 
     if message.photo:
@@ -1082,10 +1187,6 @@ async def media_nsfw_checker(
         media_type = "Media"
 
     try:
-
-        # ----------------------------------------------------
-        # DOWNLOAD MEDIA
-        # ----------------------------------------------------
 
         file_path = await client.download_media(
             message
@@ -1108,18 +1209,10 @@ async def media_nsfw_checker(
             f"{media_type} -> {file_path}"
         )
 
-        # ----------------------------------------------------
-        # SIGHTENGINE SCAN
-        # ----------------------------------------------------
-
         scan_result = await asyncio.to_thread(
             is_nsfw_media,
             file_path
         )
-
-        # ----------------------------------------------------
-        # DETECTED
-        # ----------------------------------------------------
 
         if scan_result is True:
 
@@ -1146,19 +1239,13 @@ async def media_nsfw_checker(
 
     finally:
 
-        # ----------------------------------------------------
-        # CLEAN TEMP FILE
-        # ----------------------------------------------------
-
         if (
             file_path
             and os.path.exists(file_path)
         ):
 
             try:
-
                 os.remove(file_path)
-
             except Exception:
                 pass
 
@@ -1183,10 +1270,6 @@ async def start_cmd(
             message.from_user.id
         )
 
-    # --------------------------------------------------------
-    # BOT USERNAME
-    # --------------------------------------------------------
-
     try:
 
         me = await client.get_me()
@@ -1195,10 +1278,6 @@ async def start_cmd(
     except Exception:
 
         bot_username = ""
-
-    # --------------------------------------------------------
-    # CONFIG
-    # --------------------------------------------------------
 
     support_group = getattr(
         Config,
@@ -1212,21 +1291,7 @@ async def start_cmd(
         None
     )
 
-    welcome_image = getattr(
-        Config,
-        "WELCOME_IMAGE",
-        None
-    )
-
-    # --------------------------------------------------------
-    # BUTTONS
-    # --------------------------------------------------------
-
     buttons = []
-
-    # --------------------------------------------------------
-    # ADD TO GROUP - PRIMARY
-    # --------------------------------------------------------
 
     if bot_username:
 
@@ -1243,10 +1308,6 @@ async def start_cmd(
                 )
             ]
         )
-
-    # --------------------------------------------------------
-    # SUPPORT + UPDATE
-    # --------------------------------------------------------
 
     row_2 = []
 
@@ -1274,15 +1335,11 @@ async def start_cmd(
 
         buttons.append(row_2)
 
-    # --------------------------------------------------------
-    # OWNER + HELP
-    # --------------------------------------------------------
-
     buttons.append(
         [
             InlineKeyboardButton(
                 text="👑 Owner",
-                url=f"tg://user?id={get_owner_id()}",
+                url=get_owner_url(),
                 style=ButtonStyle.PRIMARY
             ),
 
@@ -1297,10 +1354,6 @@ async def start_cmd(
     reply_markup = InlineKeyboardMarkup(
         buttons
     )
-
-    # --------------------------------------------------------
-    # WELCOME MESSAGE
-    # --------------------------------------------------------
 
     user_mention = (
         message.from_user.mention
@@ -1321,27 +1374,38 @@ async def start_cmd(
         f"🛡️ Keep your group safe, clean & protected!"
     )
 
-    # --------------------------------------------------------
-    # SEND PHOTO
-    # --------------------------------------------------------
+    # ========================================================
+    # WELCOME IMAGE
+    # ========================================================
 
     try:
 
+        welcome_image = await prepare_welcome_image()
+
         if welcome_image:
 
-            await client.send_photo(
-                chat_id=message.chat.id,
-                photo=welcome_image,
-                caption=welcome_text,
-                reply_markup=reply_markup
-            )
+            try:
 
-        else:
+                await client.send_photo(
+                    chat_id=message.chat.id,
+                    photo=welcome_image,
+                    caption=welcome_text,
+                    reply_markup=reply_markup
+                )
 
-            await message.reply_text(
-                welcome_text,
-                reply_markup=reply_markup
-            )
+                return
+
+            except Exception as image_error:
+
+                print(
+                    f"[Welcome Image Send Error] "
+                    f"{image_error}"
+                )
+
+        await message.reply_text(
+            welcome_text,
+            reply_markup=reply_markup
+        )
 
     except Exception as e:
 
@@ -1426,9 +1490,7 @@ async def help_commands_callback(
             )
 
     try:
-
         await callback_query.answer()
-
     except Exception:
         pass
 
@@ -1468,10 +1530,6 @@ async def back_start_callback(
 
     buttons = []
 
-    # --------------------------------------------------------
-    # ADD GROUP
-    # --------------------------------------------------------
-
     if bot_username:
 
         buttons.append(
@@ -1487,10 +1545,6 @@ async def back_start_callback(
                 )
             ]
         )
-
-    # --------------------------------------------------------
-    # SUPPORT + UPDATE
-    # --------------------------------------------------------
 
     row_2 = []
 
@@ -1518,15 +1572,11 @@ async def back_start_callback(
 
         buttons.append(row_2)
 
-    # --------------------------------------------------------
-    # OWNER + HELP
-    # --------------------------------------------------------
-
     buttons.append(
         [
             InlineKeyboardButton(
                 text="👑 Owner",
-                url=f"tg://user?id={get_owner_id()}",
+                url=get_owner_url(),
                 style=ButtonStyle.PRIMARY
             ),
 
@@ -1541,10 +1591,6 @@ async def back_start_callback(
     reply_markup = InlineKeyboardMarkup(
         buttons
     )
-
-    # --------------------------------------------------------
-    # WELCOME TEXT
-    # --------------------------------------------------------
 
     user = callback_query.from_user
 
@@ -1569,15 +1615,7 @@ async def back_start_callback(
 
     try:
 
-        welcome_image = getattr(
-            Config,
-            "WELCOME_IMAGE",
-            None
-        )
-
-        # ----------------------------------------------------
-        # RESTORE PHOTO WELCOME
-        # ----------------------------------------------------
+        welcome_image = await prepare_welcome_image()
 
         if welcome_image:
 
@@ -1597,6 +1635,21 @@ async def back_start_callback(
                 print(
                     f"[Back Photo Error] {e}"
                 )
+
+                try:
+
+                    await client.send_message(
+                        chat_id=callback_query.message.chat.id,
+                        text=welcome_text,
+                        reply_markup=reply_markup
+                    )
+
+                except Exception as fallback_error:
+
+                    print(
+                        f"[Back Photo Fallback Error] "
+                        f"{fallback_error}"
+                    )
 
         else:
 
