@@ -5,12 +5,12 @@ import requests
 from datetime import datetime, timedelta
 
 from pyrogram import Client, filters
-from pyrogram.enums import ChatMemberStatus, ButtonStyle
+from pyrogram.enums import ChatMemberStatus
 from pyrogram.types import (
     Message,
     ChatPermissions,
     InlineKeyboardMarkup,
-    InlineKeyboardButton,
+    InlineKeyboardButton as PyrogramInlineKeyboardButton,
     CallbackQuery,
 )
 
@@ -18,6 +18,54 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 
 from config import Config
+
+
+# ============================================================
+# BUTTON STYLE COMPATIBILITY FIX
+# ============================================================
+
+try:
+    from pyrogram.enums import ButtonStyle
+    BUTTON_STYLE_SUPPORTED = True
+
+except ImportError:
+
+    BUTTON_STYLE_SUPPORTED = False
+
+    class ButtonStyle:
+        DEFAULT = "DEFAULT"
+        PRIMARY = "PRIMARY"
+        DANGER = "DANGER"
+        SUCCESS = "SUCCESS"
+
+
+# ============================================================
+# OLD PYROGRAM COMPATIBILITY
+# ============================================================
+
+if BUTTON_STYLE_SUPPORTED:
+
+    InlineKeyboardButton = PyrogramInlineKeyboardButton
+
+else:
+
+    def InlineKeyboardButton(
+        *args,
+        style=None,
+        **kwargs
+    ):
+        """
+        Old Pyrogram versions don't support the
+        `style` parameter.
+
+        We keep all existing button code unchanged
+        and simply ignore style when unsupported.
+        """
+
+        return PyrogramInlineKeyboardButton(
+            *args,
+            **kwargs
+        )
 
 
 # ============================================================
@@ -73,6 +121,7 @@ PROFILE_CACHE_LIMIT = 5000
 
 
 def get_profile_lock(user_id: int):
+
     lock = PROFILE_SCAN_LOCKS.get(user_id)
 
     if lock is None:
@@ -83,10 +132,12 @@ def get_profile_lock(user_id: int):
 
 
 def cleanup_profile_cache():
+
     if len(PROFILE_SCAN_CACHE) <= PROFILE_CACHE_LIMIT:
         return
 
     try:
+
         oldest = sorted(
             PROFILE_SCAN_CACHE.items(),
             key=lambda item: item[1].get("time", 0),
@@ -96,7 +147,10 @@ def cleanup_profile_cache():
             PROFILE_SCAN_CACHE.pop(key, None)
 
     except Exception as e:
-        print(f"[Profile Cache Cleanup Error] {e}")
+
+        print(
+            f"[Profile Cache Cleanup Error] {e}"
+        )
 
 
 # ============================================================
@@ -109,6 +163,7 @@ async def add_served_user(user_id: int):
         return
 
     try:
+
         await users_db.update_one(
             {"user_id": int(user_id)},
             {"$set": {"user_id": int(user_id)}},
@@ -116,7 +171,10 @@ async def add_served_user(user_id: int):
         )
 
     except Exception as e:
-        print(f"[Served User DB Error] {e}")
+
+        print(
+            f"[Served User DB Error] {e}"
+        )
 
 
 async def add_served_chat(chat_id: int):
@@ -125,6 +183,7 @@ async def add_served_chat(chat_id: int):
         return
 
     try:
+
         await chats_db.update_one(
             {"chat_id": int(chat_id)},
             {"$set": {"chat_id": int(chat_id)}},
@@ -132,7 +191,10 @@ async def add_served_chat(chat_id: int):
         )
 
     except Exception as e:
-        print(f"[Served Chat DB Error] {e}")
+
+        print(
+            f"[Served Chat DB Error] {e}"
+        )
 
 
 async def get_served_users():
@@ -140,13 +202,19 @@ async def get_served_users():
     users = []
 
     try:
+
         async for doc in users_db.find({}):
 
             if doc.get("user_id"):
-                users.append(int(doc["user_id"]))
+                users.append(
+                    int(doc["user_id"])
+                )
 
     except Exception as e:
-        print(f"[Get Served Users Error] {e}")
+
+        print(
+            f"[Get Served Users Error] {e}"
+        )
 
     return users
 
@@ -156,18 +224,27 @@ async def get_served_chats():
     chats = []
 
     try:
+
         async for doc in chats_db.find({}):
 
             if doc.get("chat_id"):
-                chats.append(int(doc["chat_id"]))
+                chats.append(
+                    int(doc["chat_id"])
+                )
 
     except Exception as e:
-        print(f"[Get Served Chats Error] {e}")
+
+        print(
+            f"[Get Served Chats Error] {e}"
+        )
 
     return chats
 
 
-async def is_user_approved(chat_id: int, user_id: int) -> bool:
+async def is_user_approved(
+    chat_id: int,
+    user_id: int
+) -> bool:
 
     try:
 
@@ -182,12 +259,17 @@ async def is_user_approved(chat_id: int, user_id: int) -> bool:
 
     except Exception as e:
 
-        print(f"[Approved Check Error] {e}")
+        print(
+            f"[Approved Check Error] {e}"
+        )
 
         return False
 
 
-async def approve_user_db(chat_id: int, user_id: int):
+async def approve_user_db(
+    chat_id: int,
+    user_id: int
+):
 
     try:
 
@@ -207,10 +289,15 @@ async def approve_user_db(chat_id: int, user_id: int):
 
     except Exception as e:
 
-        print(f"[Approve DB Error] {e}")
+        print(
+            f"[Approve DB Error] {e}"
+        )
 
 
-async def unapprove_user_db(chat_id: int, user_id: int):
+async def unapprove_user_db(
+    chat_id: int,
+    user_id: int
+):
 
     try:
 
@@ -223,10 +310,15 @@ async def unapprove_user_db(chat_id: int, user_id: int):
 
     except Exception as e:
 
-        print(f"[Unapprove DB Error] {e}")
+        print(
+            f"[Unapprove DB Error] {e}"
+        )
 
 
-async def get_user_warnings(chat_id: int, user_id: int) -> int:
+async def get_user_warnings(
+    chat_id: int,
+    user_id: int
+) -> int:
 
     try:
 
@@ -240,16 +332,23 @@ async def get_user_warnings(chat_id: int, user_id: int) -> int:
         if not doc:
             return 0
 
-        return int(doc.get("count", 0))
+        return int(
+            doc.get("count", 0)
+        )
 
     except Exception as e:
 
-        print(f"[Warning Read Error] {e}")
+        print(
+            f"[Warning Read Error] {e}"
+        )
 
         return 0
 
 
-async def increment_warnings(chat_id: int, user_id: int) -> int:
+async def increment_warnings(
+    chat_id: int,
+    user_id: int
+) -> int:
 
     try:
 
@@ -270,16 +369,23 @@ async def increment_warnings(chat_id: int, user_id: int) -> int:
         if not result:
             return 1
 
-        return int(result.get("count", 1))
+        return int(
+            result.get("count", 1)
+        )
 
     except Exception as e:
 
-        print(f"[Warning Increment Error] {e}")
+        print(
+            f"[Warning Increment Error] {e}"
+        )
 
         return 1
 
 
-async def reset_warnings(chat_id: int, user_id: int):
+async def reset_warnings(
+    chat_id: int,
+    user_id: int
+):
 
     try:
 
@@ -292,7 +398,9 @@ async def reset_warnings(chat_id: int, user_id: int):
 
     except Exception as e:
 
-        print(f"[Warning Reset Error] {e}")
+        print(
+            f"[Warning Reset Error] {e}"
+        )
 
 
 # ============================================================
@@ -352,7 +460,9 @@ async def is_admin_or_owner(
 
     except Exception as e:
 
-        print(f"[Admin Check Error] {e}")
+        print(
+            f"[Admin Check Error] {e}"
+        )
 
     return False
 
@@ -383,7 +493,9 @@ def is_nsfw_media(file_path: str):
     ):
         return None
 
-    url = "https://api.sightengine.com/1.0/check.json"
+    url = (
+        "https://api.sightengine.com/1.0/check.json"
+    )
 
     params = {
         "models": "nudity-2.0,wad",
@@ -393,7 +505,10 @@ def is_nsfw_media(file_path: str):
 
     try:
 
-        with open(file_path, "rb") as image_file:
+        with open(
+            file_path,
+            "rb"
+        ) as image_file:
 
             response = requests.post(
                 url,
@@ -408,6 +523,7 @@ def is_nsfw_media(file_path: str):
             )
 
         try:
+
             data = response.json()
 
         except Exception:
@@ -750,7 +866,9 @@ async def scan_current_profile_photo(
             if os.path.exists(dp_path):
 
                 try:
+
                     os.remove(dp_path)
+
                 except Exception:
                     pass
 
@@ -1038,7 +1156,9 @@ async def media_nsfw_checker(
         ):
 
             try:
+
                 os.remove(file_path)
+
             except Exception:
                 pass
 
@@ -1306,7 +1426,9 @@ async def help_commands_callback(
             )
 
     try:
+
         await callback_query.answer()
+
     except Exception:
         pass
 
@@ -1490,7 +1612,9 @@ async def back_start_callback(
         )
 
     try:
+
         await callback_query.answer()
+
     except Exception:
         pass
 
