@@ -74,15 +74,18 @@ PROFILE_CACHE_LIMIT = 5000
 
 def get_profile_lock(user_id: int):
     lock = PROFILE_SCAN_LOCKS.get(user_id)
+
     if lock is None:
         lock = asyncio.Lock()
         PROFILE_SCAN_LOCKS[user_id] = lock
+
     return lock
 
 
 def cleanup_profile_cache():
     if len(PROFILE_SCAN_CACHE) <= PROFILE_CACHE_LIMIT:
         return
+
     try:
         oldest = sorted(
             PROFILE_SCAN_CACHE.items(),
@@ -91,6 +94,7 @@ def cleanup_profile_cache():
 
         for key, _ in oldest:
             PROFILE_SCAN_CACHE.pop(key, None)
+
     except Exception as e:
         print(f"[Profile Cache Cleanup Error] {e}")
 
@@ -100,69 +104,93 @@ def cleanup_profile_cache():
 # ============================================================
 
 async def add_served_user(user_id: int):
+
     if not user_id:
         return
+
     try:
         await users_db.update_one(
             {"user_id": int(user_id)},
             {"$set": {"user_id": int(user_id)}},
             upsert=True,
         )
+
     except Exception as e:
         print(f"[Served User DB Error] {e}")
 
 
 async def add_served_chat(chat_id: int):
+
     if not chat_id:
         return
+
     try:
         await chats_db.update_one(
             {"chat_id": int(chat_id)},
             {"$set": {"chat_id": int(chat_id)}},
             upsert=True,
         )
+
     except Exception as e:
         print(f"[Served Chat DB Error] {e}")
 
 
 async def get_served_users():
+
     users = []
+
     try:
         async for doc in users_db.find({}):
+
             if doc.get("user_id"):
                 users.append(int(doc["user_id"]))
+
     except Exception as e:
         print(f"[Get Served Users Error] {e}")
+
     return users
 
 
 async def get_served_chats():
+
     chats = []
+
     try:
         async for doc in chats_db.find({}):
+
             if doc.get("chat_id"):
                 chats.append(int(doc["chat_id"]))
+
     except Exception as e:
         print(f"[Get Served Chats Error] {e}")
+
     return chats
 
 
 async def is_user_approved(chat_id: int, user_id: int) -> bool:
+
     try:
+
         result = await approved_db.find_one(
             {
                 "chat_id": int(chat_id),
                 "user_id": int(user_id),
             }
         )
+
         return bool(result)
+
     except Exception as e:
+
         print(f"[Approved Check Error] {e}")
+
         return False
 
 
 async def approve_user_db(chat_id: int, user_id: int):
+
     try:
+
         await approved_db.update_one(
             {
                 "chat_id": int(chat_id),
@@ -176,107 +204,187 @@ async def approve_user_db(chat_id: int, user_id: int):
             },
             upsert=True,
         )
+
     except Exception as e:
+
         print(f"[Approve DB Error] {e}")
 
 
 async def unapprove_user_db(chat_id: int, user_id: int):
+
     try:
+
         await approved_db.delete_one(
             {
                 "chat_id": int(chat_id),
                 "user_id": int(user_id),
             }
         )
+
     except Exception as e:
+
         print(f"[Unapprove DB Error] {e}")
 
 
 async def get_user_warnings(chat_id: int, user_id: int) -> int:
+
     try:
+
         doc = await warnings_db.find_one(
             {
                 "chat_id": int(chat_id),
                 "user_id": int(user_id),
             }
         )
+
         if not doc:
             return 0
+
         return int(doc.get("count", 0))
+
     except Exception as e:
+
         print(f"[Warning Read Error] {e}")
+
         return 0
 
 
 async def increment_warnings(chat_id: int, user_id: int) -> int:
-    result = await warnings_db.find_one_and_update(
-        {
-            "chat_id": int(chat_id),
-            "user_id": int(user_id),
-        },
-        {"$inc": {"count": 1}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    if not result:
+
+    try:
+
+        result = await warnings_db.find_one_and_update(
+            {
+                "chat_id": int(chat_id),
+                "user_id": int(user_id),
+            },
+            {
+                "$inc": {
+                    "count": 1
+                }
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+
+        if not result:
+            return 1
+
+        return int(result.get("count", 1))
+
+    except Exception as e:
+
+        print(f"[Warning Increment Error] {e}")
+
         return 1
-    return int(result.get("count", 1))
 
 
 async def reset_warnings(chat_id: int, user_id: int):
+
     try:
+
         await warnings_db.delete_one(
             {
                 "chat_id": int(chat_id),
                 "user_id": int(user_id),
             }
         )
+
     except Exception as e:
+
         print(f"[Warning Reset Error] {e}")
 
 
 # ============================================================
-# USER DISPLAY & HELPERS
+# OWNER / ADMIN CHECK
 # ============================================================
 
 def get_owner_id():
+
     try:
-        return int(str(getattr(Config, "OWNER_ID", 0)).strip())
+
+        return int(
+            str(
+                getattr(
+                    Config,
+                    "OWNER_ID",
+                    0
+                )
+            ).strip()
+        )
+
     except Exception:
+
         return 0
 
 
-async def is_admin_or_owner(client: Client, chat_id: int, user_id: int) -> bool:
+async def is_admin_or_owner(
+    client: Client,
+    chat_id: int,
+    user_id: int
+) -> bool:
+
     if not user_id:
         return True
+
     try:
+
         owner_id = get_owner_id()
+
         if owner_id and int(user_id) == owner_id:
             return True
+
     except Exception:
         pass
 
     try:
-        member = await client.get_chat_member(chat_id, user_id)
-        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+
+        member = await client.get_chat_member(
+            chat_id,
+            user_id
+        )
+
+        if member.status in (
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        ):
             return True
+
     except Exception as e:
+
         print(f"[Admin Check Error] {e}")
+
     return False
 
 
 # ============================================================
-# ORIGINAL WORKING NSFW DETECTOR ENGINE
+# SIGHTENGINE NSFW DETECTOR
 # ============================================================
 
 def is_nsfw_media(file_path: str):
-    api_user = getattr(Config, "SIGHTENGINE_API_USER", None)
-    api_secret = getattr(Config, "SIGHTENGINE_API_SECRET", None)
 
-    if not api_user or not api_secret or not file_path or not os.path.exists(file_path):
+    api_user = getattr(
+        Config,
+        "SIGHTENGINE_API_USER",
+        None
+    )
+
+    api_secret = getattr(
+        Config,
+        "SIGHTENGINE_API_SECRET",
+        None
+    )
+
+    if (
+        not api_user
+        or not api_secret
+        or not file_path
+        or not os.path.exists(file_path)
+    ):
         return None
 
     url = "https://api.sightengine.com/1.0/check.json"
+
     params = {
         "models": "nudity-2.0,wad",
         "api_user": api_user,
@@ -284,42 +392,117 @@ def is_nsfw_media(file_path: str):
     }
 
     try:
+
         with open(file_path, "rb") as image_file:
+
             response = requests.post(
                 url,
-                files={"media": image_file},
+                files={
+                    "media": (
+                        os.path.basename(file_path),
+                        image_file
+                    )
+                },
                 data=params,
                 timeout=15,
             )
 
-        data = response.json()
-        if data.get("status") != "success":
+        try:
+            data = response.json()
+        except Exception:
+
+            print(
+                f"[NSFW Engine Error] Invalid API response: "
+                f"{response.text[:500]}"
+            )
+
             return None
 
-        nudity = data.get("nudity", {})
-        sexual_activity = float(nudity.get("sexual_activity", 0) or 0)
-        sexual_display = float(nudity.get("sexual_display", 0) or 0)
-        erotica = float(nudity.get("erotica", 0) or 0)
+        if data.get("status") != "success":
 
-        score = max(sexual_activity, sexual_display, erotica)
+            print(
+                f"[Sightengine Error] "
+                f"{data.get('error', data)}"
+            )
+
+            return None
+
+        nudity = data.get(
+            "nudity",
+            {}
+        )
+
+        sexual_activity = float(
+            nudity.get(
+                "sexual_activity",
+                0
+            ) or 0
+        )
+
+        sexual_display = float(
+            nudity.get(
+                "sexual_display",
+                0
+            ) or 0
+        )
+
+        erotica = float(
+            nudity.get(
+                "erotica",
+                0
+            ) or 0
+        )
+
+        suggestive = float(
+            nudity.get(
+                "suggestive",
+                0
+            ) or 0
+        )
+
+        score = max(
+            sexual_activity,
+            sexual_display,
+            erotica,
+            suggestive,
+        )
+
         return score > 0.5
 
     except Exception as e:
-        print(f"[NSFW Engine Error] {e}")
+
+        print(
+            f"[NSFW Scanner Error] {e}"
+        )
+
         return None
 
 
 # ============================================================
-# WARNING & VIOLATION HANDLER
+# GET USER MENTION
 # ============================================================
 
-async def get_user_mention(client: Client, user_id: int):
+async def get_user_mention(
+    client: Client,
+    user_id: int
+):
+
     try:
-        user = await client.get_users(user_id)
+
+        user = await client.get_users(
+            user_id
+        )
+
         return user.mention
+
     except Exception:
+
         return f"`{user_id}`"
 
+
+# ============================================================
+# NSFW VIOLATION HANDLER
+# ============================================================
 
 async def handle_nsfw_user_violation(
     client: Client,
@@ -328,104 +511,322 @@ async def handle_nsfw_user_violation(
     reason: str,
     message: Message = None,
 ):
+
     if not user_id:
         return False
 
-    if await is_admin_or_owner(client, chat_id, user_id) or await is_user_approved(chat_id, user_id):
+    # --------------------------------------------------------
+    # ADMIN / OWNER BYPASS
+    # --------------------------------------------------------
+
+    if await is_admin_or_owner(
+        client,
+        chat_id,
+        user_id
+    ):
         return False
 
-    if message is not None:
-        try:
-            await message.delete()
-        except Exception as e:
-            print(f"[Delete Error] {e}")
+    # --------------------------------------------------------
+    # APPROVED USER BYPASS
+    # --------------------------------------------------------
 
-    warn_count = await increment_warnings(chat_id, user_id)
-    user_mention = await get_user_mention(client, user_id)
+    if await is_user_approved(
+        chat_id,
+        user_id
+    ):
+        return False
+
+    # --------------------------------------------------------
+    # DELETE OFFENDING MESSAGE
+    # --------------------------------------------------------
+
+    if message is not None:
+
+        try:
+
+            await message.delete()
+
+            print(
+                f"[NSFW Deleted] "
+                f"{reason} | "
+                f"User: {user_id}"
+            )
+
+        except Exception as e:
+
+            print(
+                f"[Delete Error] {e}"
+            )
+
+    # --------------------------------------------------------
+    # ADD WARNING
+    # --------------------------------------------------------
+
+    warn_count = await increment_warnings(
+        chat_id,
+        user_id
+    )
+
+    user_mention = await get_user_mention(
+        client,
+        user_id
+    )
+
+    # --------------------------------------------------------
+    # WARNING 1 / 3 AND 2 / 3
+    # --------------------------------------------------------
 
     if warn_count < 3:
+
         try:
+
             await client.send_message(
                 chat_id=chat_id,
                 text=(
                     f"🚨 **NSFW Warning [{warn_count}/3]**\n\n"
-                    f"Hey {user_mention}, your **{reason}** contains adult content and was removed.\n"
-                    f"3 warnings will result in a Mute."
+                    f"Hey {user_mention}, your **{reason}** "
+                    f"contains adult content and was removed.\n\n"
+                    f"⚠️ 3 warnings will result in a Mute."
                 ),
             )
-        except Exception:
-            pass
+
+        except Exception as e:
+
+            print(
+                f"[Warning Message Error] {e}"
+            )
+
         return True
 
+    # --------------------------------------------------------
+    # 3 / 3 = MUTE
+    # --------------------------------------------------------
+
     try:
+
         await client.restrict_chat_member(
             chat_id=chat_id,
             user_id=user_id,
-            permissions=ChatPermissions(can_send_messages=False),
+            permissions=ChatPermissions(
+                can_send_messages=False
+            ),
         )
+
         await client.send_message(
             chat_id=chat_id,
-            text=f"🚫 **User Muted!**\n\n**User:** {user_mention}\n**Reason:** Reached 3/3 NSFW warnings.",
+            text=(
+                f"🚫 **User Muted!**\n\n"
+                f"**User:** {user_mention}\n"
+                f"**Reason:** Reached 3/3 NSFW warnings."
+            ),
         )
-        await reset_warnings(chat_id, user_id)
+
+        await reset_warnings(
+            chat_id,
+            user_id
+        )
+
         return True
+
     except Exception as e:
-        print(f"[Mute Error] {e}")
+
+        print(
+            f"[Mute Error] {e}"
+        )
+
         return False
 
 
 # ============================================================
-# PROFILE SCANNER (ORIGINAL WORKING DP SCAN)
+# PROFILE PHOTO SCANNER
+#
+# THIS PART IS KEPT FROM YOUR ORIGINAL CODE
 # ============================================================
 
-async def scan_current_profile_photo(client: Client, user_id: int):
-    lock = get_profile_lock(user_id)
+async def scan_current_profile_photo(
+    client: Client,
+    user_id: int
+):
+
+    lock = get_profile_lock(
+        user_id
+    )
+
     async with lock:
+
         try:
-            user = await client.get_users(user_id)
+
+            user = await client.get_users(
+                user_id
+            )
+
             if not user or not user.photo:
                 return False, False
 
-            file_id = getattr(user.photo, "big_file_id", None) or getattr(user.photo, "small_file_id", None)
+            file_id = (
+                getattr(
+                    user.photo,
+                    "big_file_id",
+                    None
+                )
+                or
+                getattr(
+                    user.photo,
+                    "small_file_id",
+                    None
+                )
+            )
+
             if not file_id:
                 return False, False
 
-            cache = PROFILE_SCAN_CACHE.get(user_id)
-            if cache and cache.get("file_id") == file_id:
-                return True, bool(cache.get("is_nsfw", False))
+            # ------------------------------------------------
+            # CACHE
+            # ------------------------------------------------
 
-            dp_path = await client.download_media(file_id)
-            if not dp_path or not os.path.exists(dp_path):
+            cache = PROFILE_SCAN_CACHE.get(
+                user_id
+            )
+
+            if (
+                cache
+                and cache.get("file_id") == file_id
+            ):
+
+                return (
+                    True,
+                    bool(
+                        cache.get(
+                            "is_nsfw",
+                            False
+                        )
+                    )
+                )
+
+            # ------------------------------------------------
+            # DOWNLOAD DP
+            # ------------------------------------------------
+
+            dp_path = await client.download_media(
+                file_id
+            )
+
+            if (
+                not dp_path
+                or not os.path.exists(dp_path)
+            ):
                 return True, False
 
-            scan_result = await asyncio.to_thread(is_nsfw_media, dp_path)
-            nsfw = bool(scan_result) if scan_result is not None else False
+            # ------------------------------------------------
+            # SCAN DP
+            # ------------------------------------------------
 
-            PROFILE_SCAN_CACHE[user_id] = {"file_id": file_id, "is_nsfw": nsfw, "time": time.time()}
+            scan_result = await asyncio.to_thread(
+                is_nsfw_media,
+                dp_path
+            )
+
+            nsfw = (
+                bool(scan_result)
+                if scan_result is not None
+                else False
+            )
+
+            # ------------------------------------------------
+            # CACHE RESULT
+            # ------------------------------------------------
+
+            PROFILE_SCAN_CACHE[user_id] = {
+                "file_id": file_id,
+                "is_nsfw": nsfw,
+                "time": time.time(),
+            }
+
             cleanup_profile_cache()
 
+            # ------------------------------------------------
+            # DELETE TEMP FILE
+            # ------------------------------------------------
+
             if os.path.exists(dp_path):
-                os.remove(dp_path)
+
+                try:
+                    os.remove(dp_path)
+                except Exception:
+                    pass
 
             return True, nsfw
+
         except Exception as e:
-            print(f"[DP Scan Error] {e}")
+
+            print(
+                f"[DP Scan Error] {e}"
+            )
+
             return True, False
 
 
-@app.on_message(filters.group, group=-10)
-async def profile_scan_handler(client: Client, message: Message):
-    if getattr(message, "service", None) or not message.from_user or message.from_user.is_bot:
+# ============================================================
+# PROFILE SCAN ON EVERY MESSAGE
+#
+# ORIGINAL DP LOGIC
+# ============================================================
+
+@app.on_message(
+    filters.group,
+    group=-10
+)
+async def profile_scan_handler(
+    client: Client,
+    message: Message
+):
+
+    if (
+        getattr(
+            message,
+            "service",
+            None
+        )
+        or not message.from_user
+        or message.from_user.is_bot
+    ):
         return
 
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    if await is_admin_or_owner(client, chat_id, user_id) or await is_user_approved(chat_id, user_id):
+    # --------------------------------------------------------
+    # ADMIN / OWNER
+    # --------------------------------------------------------
+
+    if await is_admin_or_owner(
+        client,
+        chat_id,
+        user_id
+    ):
         return
 
-    has_photo, nsfw = await scan_current_profile_photo(client, user_id)
+    # --------------------------------------------------------
+    # APPROVED USER
+    # --------------------------------------------------------
+
+    if await is_user_approved(
+        chat_id,
+        user_id
+    ):
+        return
+
+    # --------------------------------------------------------
+    # SCAN CURRENT DP
+    # --------------------------------------------------------
+
+    has_photo, nsfw = await scan_current_profile_photo(
+        client,
+        user_id
+    )
+
     if has_photo and nsfw:
+
         await handle_nsfw_user_violation(
             client=client,
             chat_id=chat_id,
@@ -436,44 +837,181 @@ async def profile_scan_handler(client: Client, message: Message):
 
 
 # ============================================================
-# ORIGINAL WORKING STICKER & MEDIA DELETE LOGIC (FIXED ARGUMENTS)
+# FIXED STICKER / GIF / PHOTO SCANNER
+#
+# THIS IS THE IMPORTANT FIX
 # ============================================================
 
 @app.on_message(
-    filters.group & (filters.sticker | filters.photo | filters.animation | filters.video),
+    filters.group
+    & (
+        filters.sticker
+        | filters.animation
+        | filters.photo
+    ),
     group=-5
 )
-async def media_nsfw_checker(client: Client, message: Message):
-    if getattr(message, "service", None) or not message.from_user:
+async def media_nsfw_checker(
+    client: Client,
+    message: Message
+):
+
+    if getattr(
+        message,
+        "service",
+        None
+    ):
+        return
+
+    if not message.from_user:
         return
 
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    # FIXED LINE (Passing only 2 arguments instead of 3)
-    if await is_admin_or_owner(client, chat_id, user_id) or await is_user_approved(chat_id, user_id):
+    # --------------------------------------------------------
+    # ADMIN / OWNER BYPASS
+    # --------------------------------------------------------
+
+    if await is_admin_or_owner(
+        client,
+        chat_id,
+        user_id
+    ):
         return
 
-    file_path = None
-    media_type = "Sticker/Media"
+    # --------------------------------------------------------
+    # APPROVED USER BYPASS
+    # --------------------------------------------------------
+
+    if await is_user_approved(
+        chat_id,
+        user_id
+    ):
+        return
+
+    # ========================================================
+    # STICKER HANDLING
+    # ========================================================
 
     if message.sticker:
-        media_type = "Sticker"
-    elif message.photo:
-        media_type = "Photo"
-    elif message.animation:
-        media_type = "GIF"
-    elif message.video:
-        media_type = "Video"
 
-    try:
-        file_path = await client.download_media(message)
-        if not file_path or not os.path.exists(file_path):
+        # ----------------------------------------------------
+        # VIDEO STICKER
+        # ----------------------------------------------------
+
+        if getattr(
+            message.sticker,
+            "is_video",
+            False
+        ):
+
+            print(
+                f"[Video Sticker] "
+                f"Detected from user {user_id}"
+            )
+
+            await handle_nsfw_user_violation(
+                client=client,
+                chat_id=chat_id,
+                user_id=user_id,
+                reason="Video Sticker",
+                message=message,
+            )
+
             return
 
-        is_nsfw = await asyncio.to_thread(is_nsfw_media, file_path)
+        # ----------------------------------------------------
+        # ANIMATED STICKER
+        # ----------------------------------------------------
 
-        if is_nsfw is True:
+        if getattr(
+            message.sticker,
+            "is_animated",
+            False
+        ):
+
+            print(
+                f"[Animated Sticker] "
+                f"Detected from user {user_id}"
+            )
+
+            await handle_nsfw_user_violation(
+                client=client,
+                chat_id=chat_id,
+                user_id=user_id,
+                reason="Animated Sticker",
+                message=message,
+            )
+
+            return
+
+    # ========================================================
+    # NORMAL PHOTO / STATIC STICKER / GIF
+    # ========================================================
+
+    file_path = None
+
+    if message.photo:
+
+        media_type = "Photo"
+
+    elif message.sticker:
+
+        media_type = "Sticker"
+
+    elif message.animation:
+
+        media_type = "GIF"
+
+    else:
+
+        media_type = "Media"
+
+    try:
+
+        # ----------------------------------------------------
+        # DOWNLOAD MEDIA
+        # ----------------------------------------------------
+
+        file_path = await client.download_media(
+            message
+        )
+
+        if (
+            not file_path
+            or not os.path.exists(file_path)
+        ):
+
+            print(
+                f"[Media Download Error] "
+                f"{media_type}"
+            )
+
+            return
+
+        print(
+            f"[NSFW Scan] "
+            f"{media_type} -> {file_path}"
+        )
+
+        # ----------------------------------------------------
+        # SIGHTENGINE SCAN
+        #
+        # Only normal image-type media reaches here.
+        # ----------------------------------------------------
+
+        scan_result = await asyncio.to_thread(
+            is_nsfw_media,
+            file_path
+        )
+
+        # ----------------------------------------------------
+        # DETECTED
+        # ----------------------------------------------------
+
+        if scan_result is True:
+
             await handle_nsfw_user_violation(
                 client=client,
                 chat_id=chat_id,
@@ -482,11 +1020,30 @@ async def media_nsfw_checker(client: Client, message: Message):
                 message=message,
             )
 
+        elif scan_result is None:
+
+            print(
+                f"[NSFW Scan Failed] "
+                f"{media_type}"
+            )
+
     except Exception as e:
-        print(f"[Media Checker Error] {e}")
+
+        print(
+            f"[Media Checker Error] {e}"
+        )
 
     finally:
-        if file_path and os.path.exists(file_path):
+
+        # ----------------------------------------------------
+        # CLEAN TEMP FILE
+        # ----------------------------------------------------
+
+        if (
+            file_path
+            and os.path.exists(file_path)
+        ):
+
             try:
                 os.remove(file_path)
             except Exception:
@@ -494,43 +1051,139 @@ async def media_nsfw_checker(client: Client, message: Message):
 
 
 # ============================================================
-# COMMANDS & BOT STARTUP
+# START COMMAND
 # ============================================================
 
-@app.on_message(filters.command("start") & filters.private)
-async def start_cmd(client: Client, message: Message):
-    await add_served_user(message.from_user.id)
-    await message.reply_text("👋 Hello! I am VAMPIRE GC PRO Bot.")
+@app.on_message(
+    filters.command("start")
+    & filters.private
+)
+async def start_cmd(
+    client: Client,
+    message: Message
+):
+
+    if message.from_user:
+
+        await add_served_user(
+            message.from_user.id
+        )
+
+    await message.reply_text(
+        "👋 Hello! I am VAMPIRE GC PRO Bot."
+    )
 
 
-@app.on_message(filters.group & filters.command("approve"))
-async def approve_cmd(client: Client, message: Message):
+# ============================================================
+# APPROVE COMMAND
+# ============================================================
+
+@app.on_message(
+    filters.group
+    & filters.command("approve")
+)
+async def approve_cmd(
+    client: Client,
+    message: Message
+):
+
     if not message.from_user:
         return
-    if not await is_admin_or_owner(client, message.chat.id, message.from_user.id):
-        return await message.reply_text("❌ Admin command only.")
 
-    if message.reply_to_message and message.reply_to_message.from_user:
-        target = message.reply_to_message.from_user.id
-        await approve_user_db(message.chat.id, target)
-        await message.reply_text("✅ User approved.")
+    if not await is_admin_or_owner(
+        client,
+        message.chat.id,
+        message.from_user.id
+    ):
+
+        return await message.reply_text(
+            "❌ Admin command only."
+        )
+
+    if (
+        message.reply_to_message
+        and message.reply_to_message.from_user
+    ):
+
+        target = (
+            message.reply_to_message
+            .from_user
+            .id
+        )
+
+        await approve_user_db(
+            message.chat.id,
+            target
+        )
+
+        await message.reply_text(
+            "✅ User approved."
+        )
 
 
-@app.on_message(filters.group & filters.command("unapprove"))
-async def unapprove_cmd(client: Client, message: Message):
+# ============================================================
+# UNAPPROVE COMMAND
+# ============================================================
+
+@app.on_message(
+    filters.group
+    & filters.command("unapprove")
+)
+async def unapprove_cmd(
+    client: Client,
+    message: Message
+):
+
     if not message.from_user:
         return
-    if not await is_admin_or_owner(client, message.chat.id, message.from_user.id):
-        return await message.reply_text("❌ Admin command only.")
 
-    if message.reply_to_message and message.reply_to_message.from_user:
-        target = message.reply_to_message.from_user.id
-        await unapprove_user_db(message.chat.id, target)
-        await message.reply_text("🚫 User unapproved.")
+    if not await is_admin_or_owner(
+        client,
+        message.chat.id,
+        message.from_user.id
+    ):
 
+        return await message.reply_text(
+            "❌ Admin command only."
+        )
+
+    if (
+        message.reply_to_message
+        and message.reply_to_message.from_user
+    ):
+
+        target = (
+            message.reply_to_message
+            .from_user
+            .id
+        )
+
+        await unapprove_user_db(
+            message.chat.id,
+            target
+        )
+
+        await message.reply_text(
+            "🚫 User unapproved."
+        )
+
+
+# ============================================================
+# STARTUP
+# ============================================================
 
 if __name__ == "__main__":
-    print("============================================================")
-    print("VAMPIRE GC PRO Bot Started - Made by Vampire King")
-    print("============================================================")
+
+    print(
+        "============================================================"
+    )
+
+    print(
+        "VAMPIRE GC PRO Bot Started - Made by Vampire King"
+    )
+
+    print(
+        "============================================================"
+    )
+
     app.run()
