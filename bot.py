@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta
 
 from pyrogram import Client, filters
-from pyrogram.enums import ChatMemberStatus
+from pyrogram.enums import ChatMemberStatus, ButtonStyle
 from pyrogram.types import (
     Message,
     ChatPermissions,
@@ -42,7 +42,7 @@ except ImportError:
         from bot import app
     except ImportError:
         app = Client(
-            "VAMPIREGCPRO",
+            "NSFW_PROTECTION_BOT",
             api_id=Config.API_ID,
             api_hash=Config.API_HASH,
             bot_token=Config.BOT_TOKEN,
@@ -409,6 +409,7 @@ def is_nsfw_media(file_path: str):
 
         try:
             data = response.json()
+
         except Exception:
 
             print(
@@ -639,8 +640,6 @@ async def handle_nsfw_user_violation(
 
 # ============================================================
 # PROFILE PHOTO SCANNER
-#
-# THIS PART IS KEPT FROM YOUR ORIGINAL CODE
 # ============================================================
 
 async def scan_current_profile_photo(
@@ -768,8 +767,6 @@ async def scan_current_profile_photo(
 
 # ============================================================
 # PROFILE SCAN ON EVERY MESSAGE
-#
-# ORIGINAL DP LOGIC
 # ============================================================
 
 @app.on_message(
@@ -838,8 +835,6 @@ async def profile_scan_handler(
 
 # ============================================================
 # FIXED STICKER / GIF / PHOTO SCANNER
-#
-# THIS IS THE IMPORTANT FIX
 # ============================================================
 
 @app.on_message(
@@ -997,8 +992,6 @@ async def media_nsfw_checker(
 
         # ----------------------------------------------------
         # SIGHTENGINE SCAN
-        #
-        # Only normal image-type media reaches here.
         # ----------------------------------------------------
 
         scan_result = await asyncio.to_thread(
@@ -1052,6 +1045,7 @@ async def media_nsfw_checker(
 
 # ============================================================
 # START COMMAND
+# WELCOME MESSAGE + BUTTONS
 # ============================================================
 
 @app.on_message(
@@ -1069,9 +1063,436 @@ async def start_cmd(
             message.from_user.id
         )
 
-    await message.reply_text(
-        "👋 Hello! I am VAMPIRE GC PRO Bot."
+    # --------------------------------------------------------
+    # BOT USERNAME
+    # --------------------------------------------------------
+
+    try:
+
+        me = await client.get_me()
+        bot_username = me.username
+
+    except Exception:
+
+        bot_username = ""
+
+    # --------------------------------------------------------
+    # CONFIG
+    # --------------------------------------------------------
+
+    support_group = getattr(
+        Config,
+        "SUPPORT_GROUP",
+        None
     )
+
+    update_channel = getattr(
+        Config,
+        "UPDATE_CHANNEL",
+        None
+    )
+
+    welcome_image = getattr(
+        Config,
+        "WELCOME_IMAGE",
+        None
+    )
+
+    # --------------------------------------------------------
+    # BUTTONS
+    # --------------------------------------------------------
+
+    buttons = []
+
+    # --------------------------------------------------------
+    # ADD TO GROUP - PRIMARY
+    # --------------------------------------------------------
+
+    if bot_username:
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="➕ Add Me To Your Group ➕",
+                    url=(
+                        f"https://t.me/"
+                        f"{bot_username}"
+                        f"?startgroup=true"
+                    ),
+                    style=ButtonStyle.PRIMARY
+                )
+            ]
+        )
+
+    # --------------------------------------------------------
+    # SUPPORT + UPDATE
+    # --------------------------------------------------------
+
+    row_2 = []
+
+    if support_group:
+
+        row_2.append(
+            InlineKeyboardButton(
+                text="💬 Support Group",
+                url=support_group,
+                style=ButtonStyle.PRIMARY
+            )
+        )
+
+    if update_channel:
+
+        row_2.append(
+            InlineKeyboardButton(
+                text="📢 Update Channel",
+                url=update_channel,
+                style=ButtonStyle.PRIMARY
+            )
+        )
+
+    if row_2:
+
+        buttons.append(row_2)
+
+    # --------------------------------------------------------
+    # OWNER + HELP
+    # --------------------------------------------------------
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="👑 Owner",
+                url=f"tg://user?id={get_owner_id()}",
+                style=ButtonStyle.PRIMARY
+            ),
+
+            InlineKeyboardButton(
+                text="❓ Help & Commands",
+                callback_data="help_commands",
+                style=ButtonStyle.DANGER
+            )
+        ]
+    )
+
+    reply_markup = InlineKeyboardMarkup(
+        buttons
+    )
+
+    # --------------------------------------------------------
+    # WELCOME MESSAGE
+    # --------------------------------------------------------
+
+    user_mention = (
+        message.from_user.mention
+        if message.from_user
+        else "User"
+    )
+
+    welcome_text = (
+        f"👋 Hello {user_mention}!\n\n"
+        f"🤖 **Welcome to NSFW PROTECTION BOT!**\n\n"
+        f"An advanced AI-powered Telegram group moderation bot.\n\n"
+        f"✨ **Core Features:**\n"
+        f"• NSFW Profile Picture Scanning\n"
+        f"• Adult 18+ Sticker & GIF Auto-Delete\n"
+        f"• 3-Strike Warning & Auto-Mute System\n"
+        f"• Group Protection & Automatic Moderation\n"
+        f"• 24/7 Online Protection\n\n"
+        f"🛡️ Keep your group safe, clean & protected!"
+    )
+
+    # --------------------------------------------------------
+    # SEND PHOTO
+    # --------------------------------------------------------
+
+    try:
+
+        if welcome_image:
+
+            await client.send_photo(
+                chat_id=message.chat.id,
+                photo=welcome_image,
+                caption=welcome_text,
+                reply_markup=reply_markup
+            )
+
+        else:
+
+            await message.reply_text(
+                welcome_text,
+                reply_markup=reply_markup
+            )
+
+    except Exception as e:
+
+        print(
+            f"[Welcome Message Error] {e}"
+        )
+
+        try:
+
+            await message.reply_text(
+                welcome_text,
+                reply_markup=reply_markup
+            )
+
+        except Exception as error:
+
+            print(
+                f"[Welcome Fallback Error] {error}"
+            )
+
+
+# ============================================================
+# HELP & COMMANDS
+# ============================================================
+
+@app.on_callback_query(
+    filters.regex("^help_commands$")
+)
+async def help_commands_callback(
+    client: Client,
+    callback_query: CallbackQuery
+):
+
+    help_text = (
+        "🛡️ **NSFW PROTECTION BOT**\n\n"
+        "✨ **Available Commands:**\n\n"
+        "• `/start` — Start the bot\n"
+        "• `/approve` — Approve a user\n"
+        "• `/unapprove` — Remove user approval\n\n"
+        "🔰 **Protection:**\n"
+        "• NSFW profile picture scanning\n"
+        "• NSFW photo detection\n"
+        "• Adult sticker detection\n"
+        "• GIF detection\n"
+        "• Automatic message deletion\n"
+        "• 3-warning auto mute system\n\n"
+        "👑 Admins and approved users are bypassed."
+    )
+
+    back_button = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    text="🔙 Back",
+                    callback_data="back_start",
+                    style=ButtonStyle.PRIMARY
+                )
+            ]
+        ]
+    )
+
+    try:
+
+        await callback_query.message.edit_caption(
+            caption=help_text,
+            reply_markup=back_button
+        )
+
+    except Exception:
+
+        try:
+
+            await callback_query.message.edit_text(
+                text=help_text,
+                reply_markup=back_button
+            )
+
+        except Exception as e:
+
+            print(
+                f"[Help Callback Error] {e}"
+            )
+
+    try:
+        await callback_query.answer()
+    except Exception:
+        pass
+
+
+# ============================================================
+# BACK BUTTON
+# ============================================================
+
+@app.on_callback_query(
+    filters.regex("^back_start$")
+)
+async def back_start_callback(
+    client: Client,
+    callback_query: CallbackQuery
+):
+
+    try:
+
+        me = await client.get_me()
+        bot_username = me.username
+
+    except Exception:
+
+        bot_username = ""
+
+    support_group = getattr(
+        Config,
+        "SUPPORT_GROUP",
+        None
+    )
+
+    update_channel = getattr(
+        Config,
+        "UPDATE_CHANNEL",
+        None
+    )
+
+    buttons = []
+
+    # --------------------------------------------------------
+    # ADD GROUP
+    # --------------------------------------------------------
+
+    if bot_username:
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="➕ Add Me To Your Group ➕",
+                    url=(
+                        f"https://t.me/"
+                        f"{bot_username}"
+                        f"?startgroup=true"
+                    ),
+                    style=ButtonStyle.PRIMARY
+                )
+            ]
+        )
+
+    # --------------------------------------------------------
+    # SUPPORT + UPDATE
+    # --------------------------------------------------------
+
+    row_2 = []
+
+    if support_group:
+
+        row_2.append(
+            InlineKeyboardButton(
+                text="💬 Support Group",
+                url=support_group,
+                style=ButtonStyle.PRIMARY
+            )
+        )
+
+    if update_channel:
+
+        row_2.append(
+            InlineKeyboardButton(
+                text="📢 Update Channel",
+                url=update_channel,
+                style=ButtonStyle.PRIMARY
+            )
+        )
+
+    if row_2:
+
+        buttons.append(row_2)
+
+    # --------------------------------------------------------
+    # OWNER + HELP
+    # --------------------------------------------------------
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="👑 Owner",
+                url=f"tg://user?id={get_owner_id()}",
+                style=ButtonStyle.PRIMARY
+            ),
+
+            InlineKeyboardButton(
+                text="❓ Help & Commands",
+                callback_data="help_commands",
+                style=ButtonStyle.DANGER
+            )
+        ]
+    )
+
+    reply_markup = InlineKeyboardMarkup(
+        buttons
+    )
+
+    # --------------------------------------------------------
+    # WELCOME TEXT
+    # --------------------------------------------------------
+
+    user = callback_query.from_user
+
+    user_mention = (
+        user.mention
+        if user
+        else "User"
+    )
+
+    welcome_text = (
+        f"👋 Hello {user_mention}!\n\n"
+        f"🤖 **Welcome to NSFW PROTECTION BOT!**\n\n"
+        f"An advanced AI-powered Telegram group moderation bot.\n\n"
+        f"✨ **Core Features:**\n"
+        f"• NSFW Profile Picture Scanning\n"
+        f"• Adult 18+ Sticker & GIF Auto-Delete\n"
+        f"• 3-Strike Warning & Auto-Mute System\n"
+        f"• Group Protection & Automatic Moderation\n"
+        f"• 24/7 Online Protection\n\n"
+        f"🛡️ Keep your group safe, clean & protected!"
+    )
+
+    try:
+
+        welcome_image = getattr(
+            Config,
+            "WELCOME_IMAGE",
+            None
+        )
+
+        # ----------------------------------------------------
+        # RESTORE PHOTO WELCOME
+        # ----------------------------------------------------
+
+        if welcome_image:
+
+            try:
+
+                await callback_query.message.delete()
+
+                await client.send_photo(
+                    chat_id=callback_query.message.chat.id,
+                    photo=welcome_image,
+                    caption=welcome_text,
+                    reply_markup=reply_markup
+                )
+
+            except Exception as e:
+
+                print(
+                    f"[Back Photo Error] {e}"
+                )
+
+        else:
+
+            await callback_query.message.edit_text(
+                welcome_text,
+                reply_markup=reply_markup
+            )
+
+    except Exception as e:
+
+        print(
+            f"[Back Callback Error] {e}"
+        )
+
+    try:
+        await callback_query.answer()
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -1179,7 +1600,7 @@ if __name__ == "__main__":
     )
 
     print(
-        "VAMPIRE GC PRO Bot Started - Made by Vampire King"
+        "NSFW PROTECTION BOT Started"
     )
 
     print(
