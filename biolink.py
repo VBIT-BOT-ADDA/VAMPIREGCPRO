@@ -1,5 +1,6 @@
 import re
 import time
+import asyncio
 
 from pyrogram import Client, filters
 from pyrogram.enums import ChatMemberStatus
@@ -11,8 +12,9 @@ from config import Config
 
 
 # ============================================================
-# Main App
+# APP
 # ============================================================
+
 try:
     from VampirePro import app
 except ImportError:
@@ -20,9 +22,11 @@ except ImportError:
 
 
 # ============================================================
-# Database Setup
+# DATABASE
 # ============================================================
+
 mongo_client = AsyncIOMotorClient(Config.MONGO_DB_URI)
+
 db = mongo_client["VAMPIREGCPRO_DB"]
 
 approved_db = db["approved_users"]
@@ -30,75 +34,208 @@ warnings_db = db["warnings"]
 
 
 # ============================================================
-# Bio Link Detection
+# SETTINGS
 # ============================================================
-URL_REGEX = re.compile(
+
+MAX_WARNINGS = 3
+
+# Warning 1 -> delete + warning
+# Warning 2 -> delete + warning
+# Warning 3 -> delete + final warning
+# Warning 4 -> delete + mute
+
+MUTE_AFTER = 3
+
+
+# ============================================================
+# LINK / DOMAIN DETECTOR
+# ============================================================
+
+BIO_LINK_REGEX = re.compile(
     r"""
+    (?ix)
+
+    # HTTP / HTTPS
+    https?://[^\s]+
+
+    |
+
+    # WWW
+    www\.[^\s]+
+
+    |
+
+    # Telegram links
+    (?:https?://)?(?:www\.)?
+    (?:t\.me|telegram\.me|telegram\.dog)/
+    [^\s]+
+
+    |
+
+    # Telegram username
+    (?:^|\s)@
+    [a-zA-Z0-9_]{4,32}
+
+    |
+
+    # Normal domains
+    \b
+    (?:[a-zA-Z0-9-]+\.)+
     (?:
-        https?://\S+
-        |
-        www\.\S+
-        |
-        t\.me/\S+
-        |
-        telegram\.me/\S+
-        |
-        \b[a-zA-Z0-9.-]+\.
-        (?:com|org|net|me|in|site|xyz|online|app|io|co|dev|gg|ly)
-        (?:/\S*)?
+        com
+        |net
+        |org
+        |me
+        |in
+        |co
+        |io
+        |xyz
+        |site
+        |online
+        |app
+        |dev
+        |gg
+        |ly
+        |link
+        |store
+        |shop
+        |live
+        |pro
+        |info
+        |biz
+        |tech
+        |cloud
+        |fun
+        |top
+        |vip
+        |club
+        |click
+        |icu
+        |cc
+        |tv
     )
+    (?:/[^\s]*)?
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
 
 # ============================================================
-# Helpers
+# BIO TEXT NORMALIZER
 # ============================================================
-async def is_user_approved(chat_id: int, user_id: int) -> bool:
-    """Check whether user is approved in this group."""
+
+def normalize_bio(text: str) -> str:
+
+    if not text:
+        return ""
+
+    # Remove zero-width characters
+    text = re.sub(
+        r"[\u200b-\u200f\u202a-\u202e\ufeff]",
+        "",
+        text,
+    )
+
+    # Normalize spaces
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+# ============================================================
+# BIO LINK CHECK
+# ============================================================
+
+def detect_bio_link(bio: str):
+
+    bio = normalize_bio(bio)
+
+    if not bio:
+        return False, None
+
+    match = BIO_LINK_REGEX.search(bio)
+
+    if match:
+        return True, match.group(0)
+
+    return False, None
+
+
+# ============================================================
+# APPROVED CHECK
+# ============================================================
+
+async def is_user_approved(
+    chat_id: int,
+    user_id: int,
+) -> bool:
+
     try:
+
         result = await approved_db.find_one(
             {
                 "chat_id": int(chat_id),
                 "user_id": int(user_id),
             }
         )
-        return bool(result)
+
+        return result is not None
 
     except Exception as e:
-        print(f"[Approved Check Error] {chat_id}/{user_id}: {e}")
+
+        print(
+            f"[APPROVED CHECK ERROR] "
+            f"{chat_id}/{user_id}: {e}"
+        )
+
         return False
 
+
+# ============================================================
+# ADMIN / OWNER CHECK
+# ============================================================
 
 async def is_admin_or_owner(
     client: Client,
     chat_id: int,
     user_id: int,
 ) -> bool:
-    """
-    Protect:
-    - Bot owner
-    - Group owner
-    - Group administrators
-    """
 
     if not user_id:
         return True
 
     # --------------------------------------------------------
-    # Global Bot Owner
+    # BOT OWNER
     # --------------------------------------------------------
+
     try:
-        if int(user_id) == int(Config.OWNER_ID):
+
+        owner_id = int(
+            str(
+                getattr(
+                    Config,
+                    "OWNER_ID",
+                    0,
+                )
+            ).strip()
+        )
+
+        if owner_id and int(user_id) == owner_id:
             return True
-    except (AttributeError, TypeError, ValueError):
+
+    except Exception:
         pass
 
     # --------------------------------------------------------
-    # Group Admin / Owner
+    # GROUP ADMIN / OWNER
     # --------------------------------------------------------
+
     try:
+
         member = await client.get_chat_member(
             chat_id,
             user_id,
@@ -111,68 +248,180 @@ async def is_admin_or_owner(
             return True
 
     except Exception as e:
+
         print(
-            f"[Admin Check Error] "
-            f"chat={chat_id}, user={user_id}: {e}"
+            f"[ADMIN CHECK ERROR] "
+            f"chat={chat_id} "
+            f"user={user_id}: {e}"
         )
 
     return False
 
 
 # ============================================================
-# Warning System
+# GET CURRENT USER BIO
 # ============================================================
-async def increment_warnings(
+
+async def get_current_user_bio(
+    client: Client,
+    user_id: int,
+):
+    """
+    Fresh Telegram profile lookup.
+    No cache.
+    """
+
+    try:
+
+        user = await client.get_users(
+            int(user_id)
+        )
+
+        if not user:
+            return ""
+
+        bio = getattr(
+            user,
+            "bio",
+            None,
+        )
+
+        return normalize_bio(
+            bio or ""
+        )
+
+    except Exception as e:
+
+        print(
+            f"[BIO FETCH ERROR] "
+            f"user={user_id}: {e}"
+        )
+
+        # Second fallback
+        try:
+
+            chat = await client.get_chat(
+                int(user_id)
+            )
+
+            bio = getattr(
+                chat,
+                "bio",
+                None,
+            )
+
+            return normalize_bio(
+                bio or ""
+            )
+
+        except Exception as fallback_error:
+
+            print(
+                f"[BIO FALLBACK ERROR] "
+                f"user={user_id}: "
+                f"{fallback_error}"
+            )
+
+            return ""
+
+
+# ============================================================
+# ATOMIC WARNING COUNTER
+# ============================================================
+
+async def add_warning(
     chat_id: int,
     user_id: int,
 ) -> int:
-    """
-    Atomically increase warning count.
 
-    1st violation -> 1
-    2nd violation -> 2
-    3rd violation -> 3
-    4th violation -> 4 -> MUTE
-    """
-
-    filter_query = {
+    query = {
         "chat_id": int(chat_id),
         "user_id": int(user_id),
     }
 
     try:
+
         result = await warnings_db.find_one_and_update(
-            filter_query,
+            query,
+
             {
                 "$inc": {
                     "count": 1,
                 },
+
                 "$set": {
                     "updated_at": time.time(),
                 },
             },
+
             upsert=True,
+
             return_document=ReturnDocument.AFTER,
         )
 
         if result:
-            return int(result.get("count", 1))
+
+            return int(
+                result.get(
+                    "count",
+                    1,
+                )
+            )
 
     except Exception as e:
+
         print(
-            f"[Warning Increment Error] "
-            f"chat={chat_id}, user={user_id}: {e}"
+            f"[WARNING DB ERROR] "
+            f"{chat_id}/{user_id}: {e}"
         )
 
     return 1
 
 
+# ============================================================
+# GET WARNING COUNT
+# ============================================================
+
+async def get_warning_count(
+    chat_id: int,
+    user_id: int,
+) -> int:
+
+    try:
+
+        doc = await warnings_db.find_one(
+            {
+                "chat_id": int(chat_id),
+                "user_id": int(user_id),
+            }
+        )
+
+        if not doc:
+            return 0
+
+        return int(
+            doc.get(
+                "count",
+                0,
+            )
+        )
+
+    except Exception:
+
+        return 0
+
+
+# ============================================================
+# RESET WARNINGS
+# ============================================================
+
 async def reset_warnings(
     chat_id: int,
     user_id: int,
 ):
-    """Reset warnings after successful mute."""
+
     try:
+
         await warnings_db.delete_one(
             {
                 "chat_id": int(chat_id),
@@ -181,56 +430,107 @@ async def reset_warnings(
         )
 
     except Exception as e:
+
         print(
-            f"[Warning Reset Error] "
+            f"[WARNING RESET ERROR] "
             f"{chat_id}/{user_id}: {e}"
         )
 
 
-def user_has_bio_link(bio: str) -> bool:
-    """Detect website / Telegram link / domain in profile bio."""
+# ============================================================
+# SAFE DELETE
+# ============================================================
 
-    if not bio:
+async def safe_delete(
+    message: Message,
+) -> bool:
+
+    try:
+
+        await message.delete()
+
+        print(
+            f"[BIO MESSAGE DELETED] "
+            f"chat={message.chat.id} "
+            f"user={message.from_user.id if message.from_user else 'UNKNOWN'}"
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"[MESSAGE DELETE ERROR] "
+            f"message={message.id}: {e}"
+        )
+
         return False
 
-    return bool(URL_REGEX.search(bio))
+
+# ============================================================
+# SAFE MUTE
+# ============================================================
+
+async def mute_user(
+    client: Client,
+    chat_id: int,
+    user_id: int,
+) -> bool:
+
+    try:
+
+        await client.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            permissions=ChatPermissions(
+                can_send_messages=False
+            ),
+        )
+
+        print(
+            f"[BIO USER MUTED] "
+            f"chat={chat_id} "
+            f"user={user_id}"
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"[MUTE ERROR] "
+            f"chat={chat_id} "
+            f"user={user_id}: {e}"
+        )
+
+        return False
 
 
 # ============================================================
-# Bio Violation Handler
+# BIO VIOLATION
 # ============================================================
-async def handle_bio_violation(
+
+async def process_bio_violation(
     client: Client,
     message: Message,
+    detected_link: str = None,
 ):
-    """
-    Bio link violation system.
-
-    1st message with Bio link:
-        Delete + Warning 1/3
-
-    2nd message with Bio link:
-        Delete + Warning 2/3
-
-    3rd message with Bio link:
-        Delete + Warning 3/3
-
-    4th message with Bio link:
-        Delete + Mute
-
-    If user removes the link after warning 1/2/3,
-    nothing happens to normal messages.
-    """
 
     if not message.from_user:
         return
 
-    chat_id = message.chat.id
-    user_id = message.from_user.id
+    chat_id = int(
+        message.chat.id
+    )
+
+    user_id = int(
+        message.from_user.id
+    )
 
     # ========================================================
-    # ADMIN / OWNER PROTECTION
+    # HARD PROTECTION
     # ========================================================
+
     if await is_admin_or_owner(
         client,
         chat_id,
@@ -239,8 +539,9 @@ async def handle_bio_violation(
         return
 
     # ========================================================
-    # APPROVED USER PROTECTION
+    # APPROVED USER
     # ========================================================
+
     if await is_user_approved(
         chat_id,
         user_id,
@@ -248,108 +549,103 @@ async def handle_bio_violation(
         return
 
     # ========================================================
-    # DELETE OFFENDING MESSAGE IMMEDIATELY
+    # DELETE IMMEDIATELY
     # ========================================================
-    try:
-        await message.delete()
 
-        print(
-            f"[Bio Link Deleted] "
-            f"chat={chat_id} user={user_id}"
-        )
-
-    except Exception as e:
-        print(
-            f"[BioLink Delete Error] "
-            f"chat={chat_id}, user={user_id}: {e}"
-        )
+    await safe_delete(
+        message
+    )
 
     # ========================================================
-    # INCREMENT WARNING
+    # ADD WARNING
     # ========================================================
-    warn_count = await increment_warnings(
+
+    warning = await add_warning(
         chat_id,
         user_id,
     )
 
-    user_mention = message.from_user.mention
+    mention = message.from_user.mention
 
     # ========================================================
-    # WARNING 1/3
+    # WARNING 1
     # ========================================================
-    if warn_count == 1:
+
+    if warning == 1:
 
         try:
+
             await client.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"🚨 **Bio Link Warning [1/3]**\n\n"
-                    f"Hey {user_mention}, a link/website was "
-                    f"detected in your Telegram profile Bio.\n\n"
-                    f"🗑 Your message was removed.\n"
-                    f"⚠️ Please remove the link from your Bio.\n\n"
-                    f"🔒 **3 warnings = mute on the next violation.**"
-                ),
+                chat_id,
+
+                f"🚨 **BIO LINK WARNING [1/3]**\n\n"
+                f"👤 {mention}\n\n"
+                f"Your Telegram profile Bio contains "
+                f"a link or website.\n\n"
+                f"🗑 Your message has been removed.\n"
+                f"⚠️ Please remove the link from your Bio.\n\n"
+                f"🔒 **3 warnings = final warning.**"
             )
 
         except Exception as e:
+
             print(
-                f"[Warning Message Error] "
-                f"{chat_id}/{user_id}: {e}"
+                f"[WARNING 1 SEND ERROR] {e}"
             )
 
         return
 
     # ========================================================
-    # WARNING 2/3
+    # WARNING 2
     # ========================================================
-    if warn_count == 2:
+
+    if warning == 2:
 
         try:
+
             await client.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"⚠️ **Bio Link Warning [2/3]**\n\n"
-                    f"{user_mention}, the link is still present "
-                    f"in your Telegram profile Bio.\n\n"
-                    f"🗑 Your message was removed.\n"
-                    f"❗ Please remove the link from your Bio.\n\n"
-                    f"🔒 **One more warning and the next violation "
-                    f"will result in mute.**"
-                ),
+                chat_id,
+
+                f"⚠️ **BIO LINK WARNING [2/3]**\n\n"
+                f"👤 {mention}\n\n"
+                f"The link is still present in your "
+                f"Telegram profile Bio.\n\n"
+                f"🗑 Your message was removed.\n"
+                f"❗ Remove the link from your Bio.\n\n"
+                f"🚨 **One final warning remains.**"
             )
 
         except Exception as e:
+
             print(
-                f"[Warning Message Error] "
-                f"{chat_id}/{user_id}: {e}"
+                f"[WARNING 2 SEND ERROR] {e}"
             )
 
         return
 
     # ========================================================
-    # WARNING 3/3
+    # WARNING 3
     # ========================================================
-    if warn_count == 3:
+
+    if warning == 3:
 
         try:
+
             await client.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"🚨 **Final Bio Link Warning [3/3]**\n\n"
-                    f"{user_mention}, the link is still present "
-                    f"in your Telegram profile Bio.\n\n"
-                    f"🗑 Your message was removed.\n"
-                    f"⚠️ This is your **final warning**.\n\n"
-                    f"🔇 **If you send another message while "
-                    f"the Bio link remains, you will be muted.**"
-                ),
+                chat_id,
+
+                f"🚨 **FINAL BIO WARNING [3/3]**\n\n"
+                f"👤 {mention}\n\n"
+                f"The link is still present in your "
+                f"Telegram profile Bio.\n\n"
+                f"🗑 Your message was removed.\n\n"
+                f"⚠️ **NEXT VIOLATION = MUTE**"
             )
 
         except Exception as e:
+
             print(
-                f"[Warning Message Error] "
-                f"{chat_id}/{user_id}: {e}"
+                f"[WARNING 3 SEND ERROR] {e}"
             )
 
         return
@@ -357,92 +653,98 @@ async def handle_bio_violation(
     # ========================================================
     # 4TH VIOLATION -> MUTE
     # ========================================================
-    if warn_count >= 4:
 
-        try:
-            await client.restrict_chat_member(
-                chat_id=chat_id,
-                user_id=user_id,
-                permissions=ChatPermissions(
-                    can_send_messages=False
-                ),
-            )
+    if warning >= 4:
 
-            await client.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"🚫 **User Muted**\n\n"
-                    f"👤 **User:** {user_mention}\n"
-                    f"📌 **Reason:** Bio link remained after "
-                    f"3 warnings.\n\n"
-                    f"🔇 User has been muted automatically."
-                ),
-            )
+        muted = await mute_user(
+            client,
+            chat_id,
+            user_id,
+        )
 
-            print(
-                f"[Bio Link Mute] "
-                f"chat={chat_id} user={user_id}"
-            )
+        if muted:
 
-            # Reset after successful mute
+            try:
+
+                await client.send_message(
+                    chat_id,
+
+                    f"🔇 **USER MUTED**\n\n"
+                    f"👤 {mention}\n\n"
+                    f"📌 Reason: Bio link remained "
+                    f"after **3 warnings**.\n\n"
+                    f"🚫 The user has been muted "
+                    f"automatically."
+                )
+
+            except Exception as e:
+
+                print(
+                    f"[MUTE MESSAGE ERROR] {e}"
+                )
+
+            # Start fresh
             await reset_warnings(
                 chat_id,
                 user_id,
             )
 
-        except Exception as e:
-            print(
-                f"[Mute Error] "
-                f"chat={chat_id}, user={user_id}: {e}"
-            )
+        else:
 
             try:
+
                 await client.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        f"❌ **Mute failed for {user_mention}.**\n\n"
-                        f"Please make sure the bot has permission "
-                        f"to restrict/mute members."
-                    ),
+                    chat_id,
+
+                    f"❌ **Could not mute {mention}.**\n\n"
+                    f"Please make sure I have "
+                    f"permission to restrict members."
                 )
 
-            except Exception as send_error:
+            except Exception as e:
+
                 print(
-                    f"[Mute Error Message] {send_error}"
+                    f"[MUTE FAIL MESSAGE ERROR] {e}"
                 )
 
 
 # ============================================================
-# HIGH PRIORITY BIO SCANNER
+# MAIN BIO GUARD
 # ============================================================
+
 @app.on_message(
-    filters.group & ~filters.me & ~filters.service,
-    group=-2,
+    filters.group
+    & ~filters.service
+    & ~filters.me,
+    group=-100,
 )
-async def biolink_checker_handler(
+async def professional_bio_guard(
     client: Client,
     message: Message,
 ):
-    """
-    Every normal group message checks the user's
-    CURRENT Telegram Bio immediately.
 
-    Bio link found:
-        Message deleted immediately
-        Warning added immediately
-
-    No cache is used so Bio changes are detected immediately.
-    """
+    # ========================================================
+    # BASIC VALIDATION
+    # ========================================================
 
     if not message.from_user:
         return
 
-    chat_id = message.chat.id
-    user_id = message.from_user.id
+    if message.from_user.is_bot:
+        return
+
+    chat_id = int(
+        message.chat.id
+    )
+
+    user_id = int(
+        message.from_user.id
+    )
 
     # ========================================================
-    # ADMIN / OWNER PROTECTION
+    # ADMIN / OWNER BYPASS
     # ========================================================
+
     if await is_admin_or_owner(
         client,
         chat_id,
@@ -451,8 +753,9 @@ async def biolink_checker_handler(
         return
 
     # ========================================================
-    # APPROVED USER PROTECTION
+    # APPROVED BYPASS
     # ========================================================
+
     if await is_user_approved(
         chat_id,
         user_id,
@@ -460,50 +763,63 @@ async def biolink_checker_handler(
         return
 
     # ========================================================
-    # GET CURRENT TELEGRAM PROFILE
+    # GET FRESH BIO
     # ========================================================
-    try:
-        user_info = await client.get_chat(user_id)
 
-        bio_text = (user_info.bio or "").strip()
+    bio = await get_current_user_bio(
+        client,
+        user_id,
+    )
 
-        # ====================================================
-        # CHECK LINK IMMEDIATELY
-        # ====================================================
-        if user_has_bio_link(bio_text):
-
-            print(
-                f"[Bio Link Detected] "
-                f"chat={chat_id} user={user_id} "
-                f"bio={bio_text}"
-            )
-
-            await handle_bio_violation(
-                client,
-                message,
-            )
-
-            return
-
-        # ====================================================
-        # NO LINK -> ALLOW MESSAGE
-        # ====================================================
+    if not bio:
         return
 
-    except Exception as e:
-        print(
-            f"[Bio Check Error] "
-            f"chat={chat_id}, user={user_id}: {e}"
-        )
+    # ========================================================
+    # DETECT
+    # ========================================================
+
+    detected, link = detect_bio_link(
+        bio
+    )
+
+    if not detected:
+        return
+
+    # ========================================================
+    # LOG
+    # ========================================================
+
+    print(
+        "\n"
+        "============================================\n"
+        "🚨 BIO LINK DETECTED\n"
+        f"CHAT      : {chat_id}\n"
+        f"USER      : {user_id}\n"
+        f"LINK      : {link}\n"
+        f"BIO       : {bio}\n"
+        "============================================"
+    )
+
+    # ========================================================
+    # DELETE + WARN / MUTE
+    # ========================================================
+
+    await process_bio_violation(
+        client=client,
+        message=message,
+        detected_link=link,
+    )
 
 
 # ============================================================
 # APPROVE
 # ============================================================
+
 @app.on_message(
-    filters.group & filters.command("approve")
+    filters.group
+    & filters.command("approve"),
 )
-async def approve_cmd(
+async def approve_user_command(
     client: Client,
     message: Message,
 ):
@@ -511,73 +827,111 @@ async def approve_cmd(
     if not message.from_user:
         return
 
-    # Only Admin / Owner
-    if not await is_admin_or_owner(
-        client,
-        message.chat.id,
-        message.from_user.id,
-    ):
-        return await message.reply_text(
-            "❌ **Admin command only.**"
-        )
-
-    # Must reply to user's message
-    if not message.reply_to_message:
-        return await message.reply_text(
-            "⚠️ **Reply to a user's message and use /approve.**"
-        )
-
-    if not message.reply_to_message.from_user:
-        return await message.reply_text(
-            "❌ **User not found.**"
-        )
-
-    target_user_id = (
-        message.reply_to_message.from_user.id
+    chat_id = int(
+        message.chat.id
     )
 
+    admin_id = int(
+        message.from_user.id
+    )
+
+    if not await is_admin_or_owner(
+        client,
+        chat_id,
+        admin_id,
+    ):
+
+        await message.reply_text(
+            "❌ **Admin / Owner only.**"
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # REPLY TARGET
+    # --------------------------------------------------------
+
+    target_message = (
+        message.reply_to_message
+    )
+
+    if not target_message:
+
+        await message.reply_text(
+            "⚠️ **Reply to the user's message and use /approve.**"
+        )
+
+        return
+
+    if not target_message.from_user:
+
+        await message.reply_text(
+            "❌ **Could not identify the user.**"
+        )
+
+        return
+
+    target_id = int(
+        target_message.from_user.id
+    )
+
+    # --------------------------------------------------------
+    # SAVE APPROVAL
+    # --------------------------------------------------------
+
     try:
+
         await approved_db.update_one(
             {
-                "chat_id": int(message.chat.id),
-                "user_id": int(target_user_id),
+                "chat_id": chat_id,
+                "user_id": target_id,
             },
+
             {
                 "$set": {
-                    "chat_id": int(message.chat.id),
-                    "user_id": int(target_user_id),
+                    "chat_id": chat_id,
+                    "user_id": target_id,
                     "approved_at": time.time(),
                 }
             },
+
             upsert=True,
         )
 
-        # Optional: reset warning count
+        # Reset old warnings
         await reset_warnings(
-            message.chat.id,
-            target_user_id,
+            chat_id,
+            target_id,
         )
 
         await message.reply_text(
-            "✅ **User Approved!**\n\n"
-            "This user's Bio links will now be ignored "
-            "in this group."
+            "✅ **User Approved Successfully**\n\n"
+            f"👤 {target_message.from_user.mention}\n\n"
+            "Bio link checking is now bypassed "
+            "for this user in this group."
         )
 
     except Exception as e:
+
         print(
-            f"[Approve Error] "
-            f"{message.chat.id}/{target_user_id}: {e}"
+            f"[APPROVE ERROR] "
+            f"{chat_id}/{target_id}: {e}"
+        )
+
+        await message.reply_text(
+            "❌ Failed to approve user."
         )
 
 
 # ============================================================
 # UNAPPROVE
 # ============================================================
+
 @app.on_message(
-    filters.group & filters.command("unapprove")
+    filters.group
+    & filters.command("unapprove"),
 )
-async def unapprove_cmd(
+async def unapprove_user_command(
     client: Client,
     message: Message,
 ):
@@ -585,47 +939,117 @@ async def unapprove_cmd(
     if not message.from_user:
         return
 
-    # Only Admin / Owner
-    if not await is_admin_or_owner(
-        client,
-        message.chat.id,
-        message.from_user.id,
-    ):
-        return await message.reply_text(
-            "❌ **Admin command only.**"
-        )
-
-    # Must reply to user's message
-    if not message.reply_to_message:
-        return await message.reply_text(
-            "⚠️ **Reply to a user's message and use /unapprove.**"
-        )
-
-    if not message.reply_to_message.from_user:
-        return await message.reply_text(
-            "❌ **User not found.**"
-        )
-
-    target_user_id = (
-        message.reply_to_message.from_user.id
+    chat_id = int(
+        message.chat.id
     )
 
+    admin_id = int(
+        message.from_user.id
+    )
+
+    if not await is_admin_or_owner(
+        client,
+        chat_id,
+        admin_id,
+    ):
+
+        await message.reply_text(
+            "❌ **Admin / Owner only.**"
+        )
+
+        return
+
+    target_message = (
+        message.reply_to_message
+    )
+
+    if not target_message:
+
+        await message.reply_text(
+            "⚠️ **Reply to the user's message and use /unapprove.**"
+        )
+
+        return
+
+    if not target_message.from_user:
+
+        await message.reply_text(
+            "❌ **Could not identify the user.**"
+        )
+
+        return
+
+    target_id = int(
+        target_message.from_user.id
+    )
+
+    # --------------------------------------------------------
+    # REMOVE APPROVAL
+    # --------------------------------------------------------
+
     try:
+
         await approved_db.delete_one(
             {
-                "chat_id": int(message.chat.id),
-                "user_id": int(target_user_id),
+                "chat_id": chat_id,
+                "user_id": target_id,
             }
         )
 
         await message.reply_text(
-            "🚫 **User Unapproved!**\n\n"
-            "Bio link checking has been enabled "
-            "for this user again."
+            "🚫 **User Unapproved**\n\n"
+            f"👤 {target_message.from_user.mention}\n\n"
+            "Bio link scanning is active again."
         )
 
     except Exception as e:
+
         print(
-            f"[Unapprove Error] "
-            f"{message.chat.id}/{target_user_id}: {e}"
+            f"[UNAPPROVE ERROR] "
+            f"{chat_id}/{target_id}: {e}"
         )
+
+        await message.reply_text(
+            "❌ Failed to unapprove user."
+        )
+
+
+# ============================================================
+# STARTUP
+# ============================================================
+
+print(
+    "=============================================="
+)
+
+print(
+    "🛡️ VAMPIRE GC PRO - PROFESSIONAL BIO GUARD"
+)
+
+print(
+    "✅ Fresh Bio Detection"
+)
+
+print(
+    "✅ Instant Message Delete"
+)
+
+print(
+    "✅ 3 Warning System"
+)
+
+print(
+    "✅ 4th Violation Auto Mute"
+)
+
+print(
+    "✅ Admin / Owner Protection"
+)
+
+print(
+    "✅ Approve / Unapprove System"
+)
+
+print(
+    "=============================================="
+)
