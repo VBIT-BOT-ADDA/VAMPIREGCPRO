@@ -660,7 +660,7 @@ async def prepare_welcome_image():
 # ============================================================
 
 BIO_SCAN_CACHE = {}
-BIO_SCAN_CACHE_TTL = 15
+BIO_SCAN_CACHE_TTL = 2
 
 # Telegram group/channel/invite links.
 TELEGRAM_LINK_PATTERN = re.compile(
@@ -695,22 +695,44 @@ PROFANITY_PATTERN = re.compile(
 
 
 def contains_telegram_link(text: str) -> bool:
+    """Detect normal, shortened and invite-style Telegram links."""
     if not text:
         return False
 
     try:
-        return bool(TELEGRAM_LINK_PATTERN.search(str(text)))
+        value = str(text)
+        return bool(TELEGRAM_LINK_PATTERN.search(value))
     except Exception:
         return False
 
 
 def contains_profanity(text: str) -> bool:
+    """Detect abusive words in text/captions, including simple obfuscation."""
     if not text:
         return False
 
     try:
-        value = str(text).replace("\u200b", " ").replace("\u200c", " ")
-        return bool(PROFANITY_PATTERN.search(value))
+        value = str(text)
+        value = (
+            value.replace("\u200b", " ")
+                 .replace("\u200c", " ")
+                 .replace("\u200d", " ")
+                 .lower()
+        )
+
+        # Normal match first.
+        if PROFANITY_PATTERN.search(value):
+            return True
+
+        # Handle common punctuation/space obfuscation such as
+        # "m.a.d.a.r.c.h.o.d" without trying to aggressively
+        # reconstruct arbitrary words.
+        compact = re.sub(r"[^\w\u0900-\u097f]+", "", value)
+        if compact != value and PROFANITY_PATTERN.search(compact):
+            return True
+
+        return False
+
     except Exception:
         return False
 
