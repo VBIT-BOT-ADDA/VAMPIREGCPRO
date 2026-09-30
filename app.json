@@ -1,8 +1,17 @@
 {
-  "name": "VAMPIREGCPRO",
-  "description": "Advanced AI Telegram Group Moderation Bot with MongoDB support",
+  "name": "NSFW-PROTECTION-BOT",
+  "description": "Advanced AI Telegram Group Moderation Bot with NSFW, Bio Link and Bad Word Protection",
   "repository": "https://github.com/VBIT-BOT-ADDA/VAMPIREGCPRO",
-  "keywords": ["telegram", "bot", "pyrogram", "moderation", "python", "mongodb"],
+  "keywords": [
+    "telegram",
+    "bot",
+    "pyrogram",
+    "moderation",
+    "nsfw",
+    "mongodb",
+    "sightengine",
+    "protection"
+  ],
   "buildpacks": [
     {
       "url": "heroku/python"
@@ -22,27 +31,27 @@
       "required": true
     },
     "MONGO_DB_URI": {
-      "description": "Your MongoDB Atlas Connection URL (e.g., mongodb+scheme://...)",
+      "description": "Your MongoDB Atlas Connection URL",
       "required": true
     },
     "SIGHTENGINE_API_USER": {
-      "description": "API User Key from sightengine.com",
+      "description": "Sightengine API User Key",
       "required": true
     },
     "SIGHTENGINE_API_SECRET": {
-      "description": "API Secret Key from sightengine.com",
+      "description": "Sightengine API Secret Key",
       "required": true
     },
     "OWNER_ID": {
       "description": "Telegram User ID of the Bot Owner",
       "required": true
     },
-    "LOGGER_ID": {
-      "description": "Telegram Channel ID for logs (e.g. -100123456789)",
+    "OWNER_USERNAME": {
+      "description": "Telegram username of the owner, with or without @",
       "required": true
     },
-    "OWNER_USERNAME": {
-      "description": "Telegram username of the owner without @",
+    "LOGGER_ID": {
+      "description": "Telegram Channel ID for bot logs",
       "required": true
     },
     "SUPPORT_GROUP": {
@@ -55,10 +64,40 @@
       "required": false,
       "value": "https://t.me/YourUpdateChannel"
     },
-    "START_IMG": {
-      "description": "Direct image URL for start message photo",
+    "WELCOME_IMAGE": {
+      "description": "Direct image URL for the bot welcome/start message",
       "required": false,
       "value": "https://graph.org/file/f681a97d813735f492a83.jpg"
+    },
+    "START_IMG": {
+      "description": "Fallback start/welcome image URL",
+      "required": false,
+      "value": "https://graph.org/file/f681a97d813735f492a83.jpg"
+    },
+    "BIO_LINK_PROTECTION": {
+      "description": "Enable Telegram link detection in user bios",
+      "required": false,
+      "value": "True"
+    },
+    "BAD_WORD_PROTECTION": {
+      "description": "Enable abusive/bad word detection",
+      "required": false,
+      "value": "True"
+    },
+    "MAX_WARNINGS": {
+      "description": "Number of warnings before automatic mute",
+      "required": false,
+      "value": "3"
+    },
+    "WARNING_BUTTONS": {
+      "description": "Show Update and Support buttons below warnings",
+      "required": false,
+      "value": "True"
+    },
+    "BOT_NAME": {
+      "description": "Bot display name",
+      "required": false,
+      "value": "NSFW PROTECTION BOT"
     }
   },
   "formation": {
