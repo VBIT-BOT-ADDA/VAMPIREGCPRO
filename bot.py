@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import time
 import requests
@@ -655,6 +656,170 @@ async def prepare_welcome_image():
 
 
 # ============================================================
+# BIO LINK + PROFANITY DETECTOR
+# ============================================================
+
+BIO_SCAN_CACHE = {}
+BIO_SCAN_CACHE_TTL = 15
+
+# Telegram group/channel/invite links.
+TELEGRAM_LINK_PATTERN = re.compile(
+    r"(?i)(?:https?://)?(?:www\.)?"
+    r"(?:t\.me|telegram\.me|telegram\.dog)/"
+    r"(?:\+|joinchat/|[A-Za-z0-9_+\-]+)"
+)
+
+# Common abusive/profanity words. Word boundaries are used to reduce
+# false positives such as matching a short word inside a normal word.
+PROFANITY_WORDS = (
+    "bc", "mc", "bkl", "bsdk", "bhosdi", "bhosdike",
+    "bhosdika", "bhosdiwala", "bhosdiwale",
+    "madarchod", "madarchuda", "madarchodne",
+    "behenchod", "behenchoda", "behnchod", "behenchode",
+    "chutiya", "chutiye", "chuti", "chod", "chodna", "chodu",
+    "fuck", "fucker", "fucking", "motherfucker",
+    "bitch", "bitches", "asshole", "bastard",
+    "harami", "haramkhor", "kamina", "kamine", "kaminey",
+    "kutte", "kutta", "randi", "gandu", "gaand", "gand",
+    "लौड़ा", "लौड़े", "लौडी", "चूतिया", "चूतिये", "चूत",
+    "भोसड़ी", "भोसड़ीके", "भोसडी", "भोसडीके",
+    "मादरचोद", "मदरचोद", "बहनचोद", "भेनचोद",
+    "हरामी", "हरामखोर", "कमीना", "कमीने", "कुत्ता", "कुत्ते",
+)
+
+PROFANITY_PATTERN = re.compile(
+    r"(?i)(?<![\w])(?:"
+    + "|".join(re.escape(word) for word in sorted(PROFANITY_WORDS, key=len, reverse=True))
+    + r")(?![\w])"
+)
+
+
+def contains_telegram_link(text: str) -> bool:
+    if not text:
+        return False
+
+    try:
+        return bool(TELEGRAM_LINK_PATTERN.search(str(text)))
+    except Exception:
+        return False
+
+
+def contains_profanity(text: str) -> bool:
+    if not text:
+        return False
+
+    try:
+        value = str(text).replace("\u200b", " ").replace("\u200c", " ")
+        return bool(PROFANITY_PATTERN.search(value))
+    except Exception:
+        return False
+
+
+def get_user_bio_text(user) -> str:
+    try:
+        return str(getattr(user, "bio", None) or "").strip()
+    except Exception:
+        return ""
+
+
+async def get_user_bio(client: Client, user_id: int) -> str:
+    now = time.time()
+    cached = BIO_SCAN_CACHE.get(user_id)
+
+    if cached and now - cached.get("time", 0) < BIO_SCAN_CACHE_TTL:
+        return cached.get("bio", "")
+
+    try:
+        user = await client.get_users(user_id)
+        bio = get_user_bio_text(user)
+
+        BIO_SCAN_CACHE[user_id] = {
+            "bio": bio,
+            "time": now,
+        }
+
+        if len(BIO_SCAN_CACHE) > 5000:
+            oldest = sorted(
+                BIO_SCAN_CACHE.items(),
+                key=lambda item: item[1].get("time", 0),
+            )[:500]
+
+            for key, _ in oldest:
+                BIO_SCAN_CACHE.pop(key, None)
+
+        return bio
+
+    except Exception as e:
+        print(f"[Bio Scan Error] {e}")
+        return ""
+
+
+def get_warning_markup():
+    buttons = []
+    support_group = getattr(Config, "SUPPORT_GROUP", None)
+    update_channel = getattr(Config, "UPDATE_CHANNEL", None)
+
+    row = []
+
+    if update_channel:
+        row.append(
+            InlineKeyboardButton(
+                text="🚀 Update",
+                url=str(update_channel).strip(),
+                style=ButtonStyle.PRIMARY,
+            )
+        )
+
+    if support_group:
+        row.append(
+            InlineKeyboardButton(
+                text="💬 Support",
+                url=str(support_group).strip(),
+                style=ButtonStyle.PRIMARY,
+            )
+        )
+
+    if row:
+        buttons.append(row)
+
+    return InlineKeyboardMarkup(buttons) if buttons else None
+
+
+def get_warning_text(reason: str, warn_count: int, user_mention: str) -> str:
+    reason_lower = str(reason).lower()
+
+    if "bio" in reason_lower:
+        description = (
+            "your **bio** contains a Telegram group/channel link "
+            "which is not allowed and was removed."
+        )
+        title = "🚨 **Bio Link Warning"
+    elif "profanity" in reason_lower or "abusive" in reason_lower:
+        description = (
+            "your message contains abusive/profane language "
+            "which is not allowed and was removed."
+        )
+        title = "🚨 **Abusive Language Warning"
+    else:
+        description = (
+            f"your **{reason}** contains adult content "
+            "and was removed."
+        )
+        title = "🚨 **NSFW Warning"
+
+    return (
+        f"{title} [{warn_count}/3]**\n\n"
+        f"Hey {user_mention}, {description}\n\n"
+        f"⚠️ **3 warnings will result in an automatic mute.**"
+    )
+
+
+# ============================================================
+# END BIO LINK + PROFANITY DETECTOR
+# ============================================================
+
+
+# ============================================================
 # SIGHTENGINE NSFW DETECTOR
 # ============================================================
 
@@ -866,12 +1031,12 @@ async def handle_nsfw_user_violation(
 
             await client.send_message(
                 chat_id=chat_id,
-                text=(
-                    f"🚨 **NSFW Warning [{warn_count}/3]**\n\n"
-                    f"Hey {user_mention}, your **{reason}** "
-                    f"contains adult content and was removed.\n\n"
-                    f"⚠️ 3 warnings will result in a Mute."
+                text=get_warning_text(
+                    reason,
+                    warn_count,
+                    user_mention,
                 ),
+                reply_markup=get_warning_markup(),
             )
 
         except Exception as e:
@@ -897,8 +1062,9 @@ async def handle_nsfw_user_violation(
             text=(
                 f"🚫 **User Muted!**\n\n"
                 f"**User:** {user_mention}\n"
-                f"**Reason:** Reached 3/3 NSFW warnings."
+                f"**Reason:** 3/3 warnings reached for **{reason}**."
             ),
+            reply_markup=get_warning_markup(),
         )
 
         await reset_warnings(
@@ -1063,6 +1229,73 @@ async def profile_scan_handler(
         user_id
     ):
         return
+
+    # ------------------------------------------------------------
+    # BIO LINK DETECTOR
+    # ------------------------------------------------------------
+
+    try:
+        user_bio = await get_user_bio(
+            client,
+            user_id
+        )
+
+        if contains_telegram_link(user_bio):
+
+            print(
+                f"[BIO LINK DETECTED] "
+                f"User: {user_id}"
+            )
+
+            await handle_nsfw_user_violation(
+                client=client,
+                chat_id=chat_id,
+                user_id=user_id,
+                reason="Bio Link",
+                message=message,
+            )
+
+            # One message = one warning. Do not continue to the
+            # other scanners after this violation.
+            return
+
+    except Exception as e:
+
+        print(
+            f"[Bio Link Handler Error] {e}"
+        )
+
+    # ------------------------------------------------------------
+    # PROFANITY / ABUSIVE LANGUAGE DETECTOR
+    # ------------------------------------------------------------
+
+    message_text = (
+        getattr(message, "text", None)
+        or getattr(message, "caption", None)
+        or ""
+    )
+
+    if contains_profanity(message_text):
+
+        print(
+            f"[PROFANITY DETECTED] "
+            f"User: {user_id}"
+        )
+
+        await handle_nsfw_user_violation(
+            client=client,
+            chat_id=chat_id,
+            user_id=user_id,
+            reason="Abusive Language",
+            message=message,
+        )
+
+        # One message = one warning.
+        return
+
+    # ------------------------------------------------------------
+    # EXISTING PROFILE PHOTO / NSFW SCANNER
+    # ------------------------------------------------------------
 
     has_photo, nsfw = await scan_current_profile_photo(
         client,
