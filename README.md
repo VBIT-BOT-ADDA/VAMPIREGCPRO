@@ -9,7 +9,7 @@ VAMPIREGCPRO is an advanced AI-powered Telegram group moderation bot designed to
 Click the button below to deploy **VAMPIREGCPRO** directly to Heroku:
 
 <p align="center">
-  <a href="https://heroku.com/deploy?template=https://github.com/VBIT-BOT-ADDA/VAMPIREGCPRO">
+  <a href="https://heroku.com/deploy?template=IMPORT YOUR SOURCE LINK">
     <img src="https://img.shields.io/badge/Deploy%20To%20Heroku-SeaGreen?style=for-the-badge&logo=heroku&logoColor=white" alt="Deploy To Heroku">
   </a>
 </p>
